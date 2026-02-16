@@ -1,0 +1,7 @@
+[
+  {"name": "High Value",  "field": "price",          "operator": ">",        "value": 5,          "pile": 1},
+  {"name": "Mythics",     "field": "rarity",         "operator": "==",       "value": "mythic",   "pile": 2},
+  {"name": "Rares",       "field": "rarity",         "operator": "==",       "value": "rare",     "pile": 3},
+  {"name": "Blue Cards",  "field": "color_identity", "operator": "contains", "value": "U",        "pile": 4},
+  {"name": "Creatures",   "field": "type_line",      "operator": "contains", "value": "Creature", "pile": 5}
+]
