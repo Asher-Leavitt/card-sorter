@@ -3,693 +3,404 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Card Sorter — Control Panel</title>
-<link rel="preconnect" href="https://fonts.googleapis.com">
-<link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;600;700&family=DM+Sans:ital,wght@0,400;0,500;0,600;0,700;1,400&display=swap" rel="stylesheet">
+<title>Card Sorter</title>
+<link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;600;700&family=DM+Sans:wght@0,400;0,500;0,600;0,700&display=swap" rel="stylesheet">
 <style>
-  :root {
-    --bg:        #0a0c10;
-    --surface:   #12151c;
-    --surface2:  #1a1e28;
-    --surface3:  #222733;
-    --border:    #2a2f3c;
-    --text:      #c4c9d6;
-    --text-dim:  #5a6070;
-    --white:     #eaedf4;
-    --accent:    #4ade80;
-    --accent2:   #22c55e;
-    --accent-bg: #122a1e;
-    --red:       #f87171;
-    --red-bg:    #2a1218;
-    --yellow:    #fbbf24;
-    --yellow-bg: #2a2412;
-    --blue:      #60a5fa;
-    --blue-bg:   #12202a;
-    --purple:    #a78bfa;
-    --mono:      'JetBrains Mono', monospace;
-    --sans:      'DM Sans', sans-serif;
-    --radius:    10px;
-    --radius-sm: 6px;
-  }
+:root {
+  --bg:#0a0c10; --sf:#12151c; --sf2:#1a1e28; --sf3:#222733;
+  --brd:#2a2f3c; --tx:#c4c9d6; --txd:#5a6070; --wh:#eaedf4;
+  --g:#4ade80; --gbg:#122a1e; --r:#f87171; --rbg:#2a1218;
+  --y:#fbbf24; --ybg:#2a2412; --bl:#60a5fa; --blbg:#12202a;
+  --pp:#a78bfa; --mono:'JetBrains Mono',monospace; --sans:'DM Sans',sans-serif;
+}
+*,*::before,*::after{margin:0;padding:0;box-sizing:border-box}
+body{background:var(--bg);color:var(--tx);font-family:var(--sans);line-height:1.5}
 
-  *, *::before, *::after { margin: 0; padding: 0; box-sizing: border-box; }
+.hdr{display:flex;align-items:center;justify-content:space-between;padding:12px 24px;border-bottom:1px solid var(--brd);background:var(--sf)}
+.logo{font-family:var(--mono);font-size:15px;font-weight:700;letter-spacing:.08em;text-transform:uppercase;color:var(--g)}
+.badge{font-family:var(--mono);font-size:10px;padding:3px 10px;border-radius:99px;border:1px solid}
+.badge.sim{color:var(--y);border-color:var(--y);background:var(--ybg)}
+.badge.live{color:var(--g);border-color:var(--g);background:var(--gbg)}
 
-  body {
-    background: var(--bg);
-    color: var(--text);
-    font-family: var(--sans);
-    line-height: 1.55;
-  }
+.grid{display:grid;grid-template-columns:320px 1fr 1fr;gap:1px;background:var(--brd);min-height:calc(100vh - 48px)}
+@media(max-width:1100px){.grid{grid-template-columns:1fr 1fr}.cpan{grid-column:1/-1;grid-row:1}}
+@media(max-width:700px){.grid{grid-template-columns:1fr}}
 
-  /* ── Header ─────────────────────────── */
-  .header {
-    display: flex; align-items: center; justify-content: space-between;
-    padding: 14px 28px;
-    border-bottom: 1px solid var(--border);
-    background: var(--surface);
-  }
-  .header-left { display: flex; align-items: center; gap: 14px; }
-  .logo {
-    font-family: var(--mono); font-size: 15px; font-weight: 700;
-    letter-spacing: 0.08em; text-transform: uppercase; color: var(--accent);
-  }
-  .badge {
-    font-family: var(--mono); font-size: 10px; font-weight: 600;
-    padding: 3px 10px; border-radius: 99px; border: 1px solid;
-    letter-spacing: 0.04em;
-  }
-  .badge.sim  { color: var(--yellow); border-color: var(--yellow); background: var(--yellow-bg); }
-  .badge.live { color: var(--accent); border-color: var(--accent); background: var(--accent-bg); }
-  .header-dots { display: flex; gap: 6px; }
-  .header-dots span { width: 8px; height: 8px; border-radius: 50%; }
+.pan{background:var(--sf);padding:20px;overflow:hidden}
+.ph{font-family:var(--mono);font-size:10px;font-weight:600;letter-spacing:.1em;text-transform:uppercase;color:var(--txd);margin-bottom:14px;display:flex;align-items:center;gap:7px}
+.pip{width:7px;height:7px;border-radius:2px;display:inline-block}
+.fw{grid-column:1/-1}
 
-  /* ── Layout ─────────────────────────── */
-  .layout {
-    display: grid;
-    grid-template-columns: 340px 1fr 1fr;
-    grid-template-rows: auto auto;
-    gap: 1px;
-    background: var(--border);
-    min-height: calc(100vh - 50px);
-  }
-  @media (max-width: 1100px) {
-    .layout { grid-template-columns: 1fr 1fr; }
-    .card-panel { grid-column: 1 / -1; grid-row: 1; }
-  }
-  @media (max-width: 700px) {
-    .layout { grid-template-columns: 1fr; }
-  }
+.btn{font-family:var(--mono);font-size:12px;font-weight:600;padding:8px 16px;border:1px solid var(--brd);border-radius:6px;cursor:pointer;transition:all .12s;background:var(--sf2);color:var(--tx);white-space:nowrap}
+.btn:hover{border-color:var(--txd);background:var(--sf3)}
+.btn:active{transform:scale(.97)}
+.btn.g{background:var(--gbg);border-color:var(--g);color:var(--g)}.btn.g:hover{background:var(--g);color:var(--bg)}
+.btn.r{background:var(--rbg);border-color:var(--r);color:var(--r)}.btn.r:hover{background:var(--r);color:var(--bg)}
+.btn.b{background:var(--blbg);border-color:var(--bl);color:var(--bl)}.btn.b:hover{background:var(--bl);color:var(--bg)}
+.btn.sm{padding:5px 10px;font-size:11px}
+.btn:disabled{opacity:.4;cursor:not-allowed}
+.br{display:flex;gap:6px;flex-wrap:wrap}
 
-  .panel {
-    background: var(--surface);
-    padding: 22px;
-    overflow: hidden;
-  }
-  .panel-head {
-    font-family: var(--mono); font-size: 10px; font-weight: 600;
-    letter-spacing: 0.12em; text-transform: uppercase;
-    color: var(--text-dim); margin-bottom: 16px;
-    display: flex; align-items: center; gap: 8px;
-  }
-  .panel-head .pip {
-    width: 7px; height: 7px; border-radius: 2px;
-    display: inline-block;
-  }
-  .full-width { grid-column: 1 / -1; }
+.inds{display:flex;gap:14px;flex-wrap:wrap;margin-bottom:14px}
+.ind{display:flex;align-items:center;gap:6px;font-family:var(--mono);font-size:12px}
+.dot{width:9px;height:9px;border-radius:50%;background:var(--sf3);transition:all .2s;flex-shrink:0}
+.dot.on{background:var(--g);box-shadow:0 0 8px var(--g)}
+.dot.wrn{background:var(--y);box-shadow:0 0 8px var(--y)}
+.dot.err{background:var(--r);box-shadow:0 0 8px var(--r)}
 
-  /* ── Buttons ────────────────────────── */
-  .btn {
-    font-family: var(--mono); font-size: 12px; font-weight: 600;
-    padding: 8px 16px; border: 1px solid var(--border);
-    border-radius: var(--radius-sm); cursor: pointer;
-    transition: all 0.12s; background: var(--surface2); color: var(--text);
-    white-space: nowrap;
-  }
-  .btn:hover { border-color: var(--text-dim); background: var(--surface3); }
-  .btn:active { transform: scale(0.97); }
-  .btn.g { background: var(--accent-bg); border-color: var(--accent2); color: var(--accent); }
-  .btn.g:hover { background: var(--accent); color: var(--bg); }
-  .btn.r { background: var(--red-bg); border-color: var(--red); color: var(--red); }
-  .btn.r:hover { background: var(--red); color: var(--bg); }
-  .btn.b { background: var(--blue-bg); border-color: var(--blue); color: var(--blue); }
-  .btn.b:hover { background: var(--blue); color: var(--bg); }
-  .btn.sm { padding: 5px 10px; font-size: 11px; }
-  .btn-row { display: flex; gap: 6px; flex-wrap: wrap; }
+.srow{display:flex;align-items:center;gap:10px;margin-top:8px}
+.srow label{font-family:var(--mono);font-size:11px;color:var(--txd);min-width:44px}
+input[type=range]{-webkit-appearance:none;flex:1;height:3px;background:var(--brd);border-radius:2px;outline:none}
+input[type=range]::-webkit-slider-thumb{-webkit-appearance:none;width:14px;height:14px;border-radius:50%;background:var(--g);cursor:pointer}
+.sv{font-family:var(--mono);font-size:11px;color:var(--wh);min-width:48px;text-align:right}
 
-  /* ── Indicators ─────────────────────── */
-  .indicators { display: flex; gap: 18px; flex-wrap: wrap; margin-bottom: 16px; }
-  .ind {
-    display: flex; align-items: center; gap: 7px;
-    font-family: var(--mono); font-size: 12px;
-  }
-  .dot {
-    width: 9px; height: 9px; border-radius: 50%;
-    background: var(--surface3); transition: all 0.2s; flex-shrink: 0;
-  }
-  .dot.on  { background: var(--accent); box-shadow: 0 0 10px var(--accent); }
-  .dot.wrn { background: var(--yellow); box-shadow: 0 0 10px var(--yellow); }
-  .dot.err { background: var(--red);    box-shadow: 0 0 10px var(--red); }
+.cimg{width:100%;max-width:260px;aspect-ratio:488/680;border-radius:12px;overflow:hidden;background:var(--sf2);border:1px solid var(--brd);display:flex;align-items:center;justify-content:center;margin:0 auto}
+.cimg img{width:100%;height:100%;object-fit:cover;border-radius:12px}
+.cph{color:var(--txd);font-family:var(--mono);font-size:12px;text-align:center;padding:20px}
 
-  /* ── Slider ─────────────────────────── */
-  .slider-row {
-    display: flex; align-items: center; gap: 10px; margin-top: 10px;
-  }
-  .slider-row label {
-    font-family: var(--mono); font-size: 11px;
-    color: var(--text-dim); min-width: 44px;
-  }
-  input[type="range"] {
-    -webkit-appearance: none; flex: 1; height: 3px;
-    background: var(--border); border-radius: 2px; outline: none;
-  }
-  input[type="range"]::-webkit-slider-thumb {
-    -webkit-appearance: none; width: 14px; height: 14px;
-    border-radius: 50%; background: var(--accent); cursor: pointer;
-  }
-  .slider-val {
-    font-family: var(--mono); font-size: 11px;
-    color: var(--white); min-width: 48px; text-align: right;
-  }
+.cn{font-size:18px;font-weight:700;color:var(--wh);margin:10px 0 2px}
+.ct{font-size:13px;color:var(--txd);font-style:italic;margin-bottom:8px}
+.cmg{display:grid;grid-template-columns:1fr 1fr;gap:5px}
+.mi{background:var(--sf2);border:1px solid var(--brd);border-radius:6px;padding:7px 9px}
+.ml{font-family:var(--mono);font-size:9px;font-weight:600;letter-spacing:.08em;text-transform:uppercase;color:var(--txd);margin-bottom:1px}
+.mv{font-family:var(--mono);font-size:14px;font-weight:700;color:var(--wh)}
+.cpip{width:18px;height:18px;border-radius:50%;display:inline-flex;align-items:center;justify-content:center;font-size:10px;font-weight:700;color:#000;border:2px solid rgba(255,255,255,.12);margin-right:2px}
+.cpip.W{background:#f9f5dd}.cpip.U{background:#0e68ab;color:#fff}.cpip.B{background:#2b2a2a;color:#ccc}.cpip.R{background:#d3202a;color:#fff}.cpip.G{background:#00733e;color:#fff}.cpip.C{background:#8e8a86}
+.pbadge{display:inline-block;font-family:var(--mono);font-size:12px;font-weight:700;padding:3px 12px;border-radius:99px;background:var(--gbg);color:var(--g);border:1px solid var(--g);margin-top:8px}
 
-  /* ── Current Card ───────────────────── */
-  .card-panel { grid-row: 1 / 3; }
-  .card-view {
-    display: flex; flex-direction: column; align-items: center;
-    gap: 16px;
-  }
-  .card-img-wrap {
-    width: 100%; max-width: 280px; aspect-ratio: 488 / 680;
-    border-radius: 14px; overflow: hidden;
-    background: var(--surface2); border: 1px solid var(--border);
-    display: flex; align-items: center; justify-content: center;
-    position: relative;
-  }
-  .card-img-wrap img {
-    width: 100%; height: 100%; object-fit: cover;
-    border-radius: 14px;
-  }
-  .card-img-placeholder {
-    color: var(--text-dim); font-family: var(--mono); font-size: 12px;
-    text-align: center; padding: 20px;
-  }
-  .card-info { width: 100%; }
-  .card-name {
-    font-size: 20px; font-weight: 700; color: var(--white);
-    line-height: 1.2; margin-bottom: 4px;
-  }
-  .card-type {
-    font-size: 13px; color: var(--text-dim); margin-bottom: 10px;
-    font-style: italic;
-  }
-  .card-meta-grid {
-    display: grid; grid-template-columns: 1fr 1fr; gap: 6px;
-  }
-  .meta-item {
-    background: var(--surface2); border: 1px solid var(--border);
-    border-radius: var(--radius-sm); padding: 8px 10px;
-  }
-  .meta-label {
-    font-family: var(--mono); font-size: 9px; font-weight: 600;
-    letter-spacing: 0.1em; text-transform: uppercase;
-    color: var(--text-dim); margin-bottom: 2px;
-  }
-  .meta-value {
-    font-family: var(--mono); font-size: 14px; font-weight: 700;
-    color: var(--white);
-  }
+.rc{background:var(--sf2);border:1px solid var(--brd);border-radius:6px;padding:8px 10px;margin-bottom:5px;display:flex;align-items:center;gap:5px;flex-wrap:wrap}
+.rc select,.rc input{background:var(--bg);color:var(--tx);border:1px solid var(--brd);border-radius:4px;padding:4px 6px;font-family:var(--mono);font-size:11px}
+.rc select:focus,.rc input:focus{outline:none;border-color:var(--g)}
+.rn{width:90px}.rf{width:105px}.ro{width:72px}.rv{width:80px}.rp{width:44px;text-align:center}
+.ra{font-family:var(--mono);font-size:11px;color:var(--txd);flex-shrink:0}
+.rscr{max-height:350px;overflow-y:auto}
 
-  /* Color pips */
-  .color-pips { display: flex; gap: 4px; }
-  .cpip {
-    width: 20px; height: 20px; border-radius: 50%;
-    display: flex; align-items: center; justify-content: center;
-    font-size: 11px; font-weight: 700; color: #000;
-    border: 2px solid rgba(255,255,255,0.15);
-  }
-  .cpip.W { background: #f9f5dd; }
-  .cpip.U { background: #0e68ab; color: #fff; }
-  .cpip.B { background: #2b2a2a; color: #ccc; }
-  .cpip.R { background: #d3202a; color: #fff; }
-  .cpip.G { background: #00733e; color: #fff; }
-  .cpip.C { background: #8e8a86; }
+.lscr{max-height:320px;overflow-y:auto}
+.lr{display:flex;justify-content:space-between;align-items:center;padding:6px 8px;border-bottom:1px solid var(--brd);font-size:12px;gap:6px}
+.lr:last-child{border-bottom:none}
+.lnm{font-weight:600;color:var(--wh);flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.ld{font-family:var(--mono);font-size:10px;color:var(--txd)}
+.lp{font-family:var(--mono);font-size:10px;padding:2px 7px;border-radius:99px;background:var(--sf3);border:1px solid var(--brd);flex-shrink:0}
+.le{color:var(--txd);font-style:italic;padding:14px;text-align:center}
 
-  .pile-badge {
-    display: inline-block; font-family: var(--mono);
-    font-size: 13px; font-weight: 700; padding: 4px 14px;
-    border-radius: 99px; background: var(--accent-bg);
-    color: var(--accent); border: 1px solid var(--accent);
-    margin-top: 10px;
-  }
+.sbox{background:var(--ybg);border:1px solid rgba(251,191,36,.3);border-radius:8px;padding:12px;margin-top:12px}
+.sbox h3{font-family:var(--mono);font-size:11px;color:var(--y);margin-bottom:8px;letter-spacing:.06em;text-transform:uppercase}
+.sfs{display:flex;gap:6px;flex-wrap:wrap;align-items:end}
+.sf{display:flex;flex-direction:column;gap:2px}
+.sf label{font-family:var(--mono);font-size:9px;text-transform:uppercase;letter-spacing:.06em;color:var(--txd)}
+.sf input{background:var(--bg);color:var(--tx);border:1px solid var(--brd);border-radius:4px;padding:5px 8px;font-family:var(--mono);font-size:12px}
+.sf input:focus{outline:none;border-color:var(--y)}
 
-  /* ── Rules ──────────────────────────── */
-  .rule-card {
-    background: var(--surface2); border: 1px solid var(--border);
-    border-radius: var(--radius-sm); padding: 10px 12px;
-    margin-bottom: 6px; display: flex; align-items: center;
-    gap: 6px; flex-wrap: wrap;
-  }
-  .rule-card select, .rule-card input {
-    background: var(--bg); color: var(--text); border: 1px solid var(--border);
-    border-radius: 4px; padding: 5px 7px; font-family: var(--mono);
-    font-size: 11px;
-  }
-  .rule-card select:focus, .rule-card input:focus {
-    outline: none; border-color: var(--accent);
-  }
-  .rule-card .rule-name { width: 100px; }
-  .rule-card .rule-field { width: 110px; }
-  .rule-card .rule-op { width: 80px; }
-  .rule-card .rule-val { width: 90px; }
-  .rule-card .rule-pile { width: 50px; text-align: center; }
-  .rule-card .rule-del { flex-shrink: 0; }
-  .rule-arrow {
-    font-family: var(--mono); font-size: 11px; color: var(--text-dim);
-    flex-shrink: 0;
-  }
-  .rules-scroll { max-height: 380px; overflow-y: auto; }
+.swrap{position:relative}.sres{position:absolute;top:100%;left:0;right:0;background:var(--sf2);border:1px solid var(--brd);border-radius:0 0 6px 6px;max-height:240px;overflow-y:auto;z-index:100;display:none}
+.sres.open{display:block}
+.sri{display:flex;align-items:center;gap:8px;padding:7px 9px;cursor:pointer;border-bottom:1px solid var(--brd);transition:background .1s}
+.sri:hover{background:var(--sf3)}
+.sri img{width:28px;border-radius:3px;flex-shrink:0}
+.sri .srn{font-size:12px;font-weight:600;color:var(--wh)}
+.sri .srs{font-size:10px;color:var(--txd)}
 
-  /* ── Log ────────────────────────────── */
-  .log-scroll { max-height: 360px; overflow-y: auto; }
-  .log-row {
-    display: flex; justify-content: space-between; align-items: center;
-    padding: 7px 10px; border-bottom: 1px solid var(--border);
-    font-size: 13px; gap: 8px;
-  }
-  .log-row:last-child { border-bottom: none; }
-  .log-name { font-weight: 600; color: var(--white); flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .log-detail { font-family: var(--mono); font-size: 10px; color: var(--text-dim); }
-  .log-pile {
-    font-family: var(--mono); font-size: 10px; padding: 2px 8px;
-    border-radius: 99px; background: var(--surface3); border: 1px solid var(--border);
-    flex-shrink: 0;
-  }
-  .log-empty { color: var(--text-dim); font-style: italic; padding: 16px; text-align: center; }
+/* Sequence panel */
+.seq-step{background:var(--sf2);border:1px solid var(--brd);border-radius:8px;padding:12px;margin-bottom:8px}
+.seq-step.active{border-color:var(--g);background:var(--gbg)}
+.seq-step.disabled{opacity:.5}
+.seq-num{font-family:var(--mono);font-size:10px;font-weight:700;color:var(--txd);margin-bottom:4px;text-transform:uppercase;letter-spacing:.08em}
+.seq-desc{font-size:12px;color:var(--tx);margin-bottom:8px}
+.seq-status{font-family:var(--mono);font-size:11px;padding:4px 8px;border-radius:4px;background:var(--bg);color:var(--txd);margin-top:6px;display:none}
+.seq-status.show{display:block}
 
-  /* ── Sim box ────────────────────────── */
-  .sim-box {
-    background: var(--yellow-bg); border: 1px solid rgba(251,191,36,0.3);
-    border-radius: var(--radius); padding: 14px; margin-top: 14px;
-  }
-  .sim-box h3 {
-    font-family: var(--mono); font-size: 11px; font-weight: 600;
-    color: var(--yellow); margin-bottom: 10px;
-    letter-spacing: 0.06em; text-transform: uppercase;
-  }
-  .sim-fields { display: flex; gap: 6px; flex-wrap: wrap; align-items: end; }
-  .sim-f { display: flex; flex-direction: column; gap: 2px; }
-  .sim-f label {
-    font-family: var(--mono); font-size: 9px; text-transform: uppercase;
-    letter-spacing: 0.06em; color: var(--text-dim);
-  }
-  .sim-f input {
-    background: var(--bg); color: var(--text); border: 1px solid var(--border);
-    border-radius: 4px; padding: 6px 8px; font-family: var(--mono); font-size: 12px;
-  }
-  .sim-f input:focus { outline: none; border-color: var(--yellow); }
-
-  /* Search results dropdown */
-  .search-results {
-    position: absolute; top: 100%; left: 0; right: 0;
-    background: var(--surface2); border: 1px solid var(--border);
-    border-radius: 0 0 var(--radius-sm) var(--radius-sm);
-    max-height: 260px; overflow-y: auto; z-index: 100;
-    display: none;
-  }
-  .search-results.open { display: block; }
-  .sr-item {
-    display: flex; align-items: center; gap: 10px;
-    padding: 8px 10px; cursor: pointer; border-bottom: 1px solid var(--border);
-    transition: background 0.1s;
-  }
-  .sr-item:hover { background: var(--surface3); }
-  .sr-item img { width: 32px; border-radius: 3px; flex-shrink: 0; }
-  .sr-item .sr-name { font-size: 13px; font-weight: 600; color: var(--white); }
-  .sr-item .sr-set { font-size: 11px; color: var(--text-dim); }
-  .search-wrap { position: relative; }
-
-  /* ── Scrollbar ──────────────────────── */
-  ::-webkit-scrollbar { width: 5px; }
-  ::-webkit-scrollbar-track { background: transparent; }
-  ::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
+::-webkit-scrollbar{width:5px}::-webkit-scrollbar-track{background:transparent}::-webkit-scrollbar-thumb{background:var(--brd);border-radius:3px}
 </style>
 </head>
 <body>
 
-<!-- ═══ Header ═══ -->
-<div class="header">
-  <div class="header-left">
-    <span class="logo">🃏 Card Sorter</span>
-    <span class="badge {{ 'sim' if simulated else 'live' }}">
-      {{ 'SIM MODE' if simulated else 'LIVE' }}
-    </span>
-  </div>
-  <div class="header-dots">
-    <span id="hd1" style="background:var(--surface3)"></span>
-    <span id="hd2" style="background:var(--surface3)"></span>
-    <span id="hd3" style="background:var(--surface3)"></span>
-  </div>
+<div class="hdr">
+  <span class="logo">🃏 Card Sorter</span>
+  <span class="badge {{ 'sim' if simulated else 'live' }}">{{ 'SIM' if simulated else 'LIVE' }}</span>
 </div>
 
-<!-- ═══ Grid ═══ -->
-<div class="layout">
+<div class="grid">
 
-  <!-- ── Current Card ── -->
-  <div class="panel card-panel">
-    <div class="panel-head"><span class="pip" style="background:var(--purple)"></span> Current Card</div>
-    <div class="card-view" id="cardView">
-      <div class="card-img-wrap">
-        <div class="card-img-placeholder" id="cardImgArea">
-          Scan a card to see it here
-        </div>
+  <!-- ═══ Current Card ═══ -->
+  <div class="pan cpan" style="grid-row:1/3">
+    <div class="ph"><span class="pip" style="background:var(--pp)"></span> Current Card</div>
+    <div class="cimg" id="cardImgArea"><div class="cph">Scan a card to see it here</div></div>
+    <div id="cardInfo" style="display:none">
+      <div class="cn" id="cName"></div>
+      <div class="ct" id="cType"></div>
+      <div class="cmg">
+        <div class="mi"><div class="ml">CMC</div><div class="mv" id="cCmc">—</div></div>
+        <div class="mi"><div class="ml">Price</div><div class="mv" id="cPrice">—</div></div>
+        <div class="mi"><div class="ml">Colors</div><div class="mv" id="cColors">—</div></div>
+        <div class="mi"><div class="ml">Rarity</div><div class="mv" id="cRarity">—</div></div>
       </div>
-      <div class="card-info" id="cardInfo" style="display:none">
-        <div class="card-name" id="cardName"></div>
-        <div class="card-type" id="cardType"></div>
-        <div class="card-meta-grid">
-          <div class="meta-item">
-            <div class="meta-label">CMC</div>
-            <div class="meta-value" id="cardCmc">—</div>
-          </div>
-          <div class="meta-item">
-            <div class="meta-label">Price</div>
-            <div class="meta-value" id="cardPrice">—</div>
-          </div>
-          <div class="meta-item">
-            <div class="meta-label">Colors</div>
-            <div class="meta-value" id="cardColors"><span style="color:var(--text-dim)">—</span></div>
-          </div>
-          <div class="meta-item">
-            <div class="meta-label">Rarity</div>
-            <div class="meta-value" id="cardRarity">—</div>
-          </div>
-        </div>
-        <div id="cardPileBadge"></div>
-      </div>
+      <div id="cPile"></div>
     </div>
-
     {% if simulated %}
-    <div class="sim-box">
+    <div class="sbox">
       <h3>⚡ Simulate Scan</h3>
-      <div class="search-wrap" style="margin-bottom:10px">
-        <div class="sim-f" style="width:100%">
+      <div class="swrap" style="margin-bottom:8px">
+        <div class="sf" style="width:100%">
           <label>Search Scryfall</label>
-          <input id="simSearch" placeholder="Type a card name…"
-                 oninput="debouncedSearch(this.value)"
-                 autocomplete="off">
+          <input id="simSearch" placeholder="Type a card name…" oninput="debSearch(this.value)" autocomplete="off">
         </div>
-        <div class="search-results" id="searchResults"></div>
+        <div class="sres" id="searchRes"></div>
       </div>
-      <div class="sim-fields">
-        <div class="sim-f">
-          <label>Name</label>
-          <input id="simName" value="Birds of Paradise" style="width:140px">
-        </div>
-        <div class="sim-f">
-          <label>Scryfall ID</label>
-          <input id="simSfId" value="" style="width:180px" placeholder="auto from search">
-        </div>
-        <div class="sim-f">
-          <label>Price</label>
-          <input id="simPrice" type="number" value="8.36" style="width:70px">
-        </div>
-        <div class="sim-f">
-          <label>Rarity</label>
-          <input id="simRarity" value="rare" style="width:70px">
-        </div>
+      <div class="sfs">
+        <div class="sf"><label>Name</label><input id="simName" value="Birds of Paradise" style="width:130px"></div>
+        <div class="sf"><label>Scryfall ID</label><input id="simSfId" value="" style="width:160px" placeholder="from search"></div>
+        <div class="sf"><label>Price</label><input id="simPrice" type="number" value="8.36" style="width:65px"></div>
+        <div class="sf"><label>Rarity</label><input id="simRarity" value="rare" style="width:65px"></div>
       </div>
-      <div class="btn-row" style="margin-top:10px">
-        <button class="btn sm g" onclick="simScan()">Scan Card</button>
-      </div>
+      <div class="br" style="margin-top:8px"><button class="btn sm g" onclick="simScan()">Scan Card</button></div>
     </div>
     {% endif %}
   </div>
 
-  <!-- ── Motor Control ── -->
-  <div class="panel">
-    <div class="panel-head"><span class="pip" style="background:var(--accent)"></span> Motor Control</div>
+  <!-- ═══ Sequence Control ═══ -->
+  <div class="pan">
+    <div class="ph"><span class="pip" style="background:var(--g)"></span> Sorting Sequence</div>
+    <div class="inds" id="beamInds"></div>
 
-    <div class="indicators">
-      <div class="ind"><span id="dotMotor" class="dot"></span><span id="lblMotor">Stopped</span></div>
-      <div class="ind"><span id="dotBeam" class="dot"></span><span id="lblBeam">Beam clear</span></div>
-      <div class="ind"><span id="dotCard" class="dot"></span><span id="lblCard">No card</span></div>
+    <div class="seq-step" id="ss1">
+      <div class="seq-num">Step 1 — Home</div>
+      <div class="seq-desc">Run stepper 1 CCW until beam break 0 is hit</div>
+      <div class="br">
+        <button class="btn sm g" onclick="seqStep(1)">▶ Run Step 1</button>
+        <button class="btn sm r" onclick="seqStop()">■ Stop</button>
+      </div>
+      <div class="seq-status" id="ss1status"></div>
     </div>
 
-    <div class="btn-row">
-      <button class="btn g" onclick="motorFwd()">▶ Forward</button>
-      <button class="btn b" onclick="motorRev()">◀ Reverse</button>
-      <button class="btn r" onclick="motorStop()">■ Stop</button>
+    <div class="seq-step disabled" id="ss2">
+      <div class="seq-num">Step 2 — Scan Position</div>
+      <div class="seq-desc">Oscillate stepper 1 CW/CCW between beam 0 and 1 until Delver scans</div>
+      <div class="br">
+        <button class="btn sm" onclick="seqStep(2)" disabled>▶ Run Step 2</button>
+      </div>
+      <div class="seq-status" id="ss2status"></div>
     </div>
 
-    <div class="slider-row">
-      <label>Speed</label>
-      <input type="range" id="speedSlider" min="3" max="100" value="10"
-             oninput="setSpeed(this.value)">
-      <span class="slider-val" id="speedVal">1.0ms</span>
+    <div class="seq-step disabled" id="ss3">
+      <div class="seq-num">Step 3 — Sort to Pile</div>
+      <div class="seq-desc">Run stepper 1 CW + stepper 2 CW until target pile beam triggers</div>
+      <div class="br">
+        <button class="btn sm" onclick="seqStep(3)" disabled>▶ Run Step 3</button>
+      </div>
+      <div class="seq-status" id="ss3status"></div>
     </div>
-    <div class="slider-row">
+  </div>
+
+  <!-- ═══ Manual Motor Control ═══ -->
+  <div class="pan">
+    <div class="ph"><span class="pip" style="background:var(--bl)"></span> Manual Motor</div>
+    <p style="font-size:12px;color:var(--txd);margin-bottom:10px">Direct stepper control for testing</p>
+
+    <div class="srow" style="margin-top:0">
+      <label>Stepper</label>
+      <select id="mStepper" style="background:var(--bg);color:var(--tx);border:1px solid var(--brd);border-radius:4px;padding:4px 8px;font-family:var(--mono);font-size:12px">
+        <option value="1">Stepper 1</option>
+        <option value="2">Stepper 2</option>
+      </select>
+    </div>
+    <div class="srow">
       <label>Steps</label>
-      <input type="range" id="stepsSlider" min="0" max="2000" value="0" step="50"
-             oninput="document.getElementById('stepsVal').textContent=this.value==0?'∞':this.value">
-      <span class="slider-val" id="stepsVal">∞</span>
+      <input type="range" id="mSteps" min="10" max="2000" value="200" step="10" oninput="document.getElementById('mStepsV').textContent=this.value">
+      <span class="sv" id="mStepsV">200</span>
     </div>
+    <div class="srow">
+      <label>Speed</label>
+      <input type="range" id="mDelay" min="3" max="100" value="10" oninput="document.getElementById('mDelayV').textContent=(this.value/10000*1000).toFixed(1)+'ms'">
+      <span class="sv" id="mDelayV">1.0ms</span>
+    </div>
+    <div class="br" style="margin-top:12px">
+      <button class="btn g" onclick="manualStep(1)">▶ CW</button>
+      <button class="btn b" onclick="manualStep(-1)">◀ CCW</button>
+      <button class="btn" onclick="manualRunBeam(-1,'beam0')">⏎ Home (→beam0)</button>
+    </div>
+    <div style="font-family:var(--mono);font-size:11px;color:var(--txd);margin-top:8px" id="motorResult"></div>
 
     {% if simulated %}
-    <div class="sim-box" style="margin-top:14px">
-      <h3>⚡ Beam Sensor Sim</h3>
-      <div class="btn-row">
-        <button class="btn sm" onclick="simBeam(true)">Block Beam</button>
-        <button class="btn sm" onclick="simBeam(false)">Clear Beam</button>
-      </div>
+    <div class="sbox">
+      <h3>⚡ Sim Beam Breaks</h3>
+      <div class="br" id="simBeamBtns"></div>
     </div>
     {% endif %}
   </div>
 
-  <!-- ── Sorting Rules ── -->
-  <div class="panel">
-    <div class="panel-head"><span class="pip" style="background:var(--yellow)"></span> Sorting Rules</div>
-    <p style="font-size:12px;color:var(--text-dim);margin-bottom:10px">
-      Evaluated top-to-bottom. First match wins. No match → Pile 0 (default).
-    </p>
-    <div class="rules-scroll" id="rulesScroll"></div>
-    <div class="btn-row" style="margin-top:10px">
+  <!-- ═══ Sorting Rules ═══ -->
+  <div class="pan">
+    <div class="ph"><span class="pip" style="background:var(--y)"></span> Sorting Rules</div>
+    <p style="font-size:11px;color:var(--txd);margin-bottom:8px">Top-to-bottom, first match wins. No match → Pile 0.</p>
+    <div class="rscr" id="rulesScroll"></div>
+    <div class="br" style="margin-top:8px">
       <button class="btn sm g" onclick="addRule()">+ Add Rule</button>
       <button class="btn sm" onclick="saveRules()">💾 Save</button>
     </div>
   </div>
 
-  <!-- ── Scan Log ── -->
-  <div class="panel full-width">
-    <div class="panel-head">
-      <span class="pip" style="background:var(--blue)"></span> Scan Log
+  <!-- ═══ Scan Log ═══ -->
+  <div class="pan fw">
+    <div class="ph">
+      <span class="pip" style="background:var(--bl)"></span> Scan Log
       <span style="flex:1"></span>
-      <span style="font-family:var(--mono);font-size:22px;color:var(--white);font-weight:700" id="totalCount">0</span>
-      <span style="font-size:10px;color:var(--text-dim);margin-left:4px">scanned</span>
+      <span style="font-family:var(--mono);font-size:20px;color:var(--wh);font-weight:700" id="totalCt">0</span>
+      <span style="font-size:10px;color:var(--txd);margin-left:4px">scanned</span>
     </div>
-    <div class="btn-row" style="margin-bottom:8px">
-      <button class="btn sm" onclick="window.open('/api/scans/export')">↓ Export CSV</button>
+    <div class="br" style="margin-bottom:6px">
+      <button class="btn sm" onclick="window.open('/api/scans/export')">↓ CSV</button>
       <button class="btn sm r" onclick="clearScans()">Clear</button>
     </div>
-    <div class="log-scroll" id="logList">
-      <div class="log-empty">No scans yet</div>
-    </div>
+    <div class="lscr" id="logList"><div class="le">No scans yet</div></div>
   </div>
-
 </div>
 
 <script>
-// ── Helpers ──────────────────────────────
-const api = (url, opts={}) =>
-  fetch(url, {
-    headers: {'Content-Type':'application/json'},
-    ...opts,
-    body: opts.body ? JSON.stringify(opts.body) : undefined,
-  }).then(r => r.json());
+const api=(u,o={})=>fetch(u,{headers:{'Content-Type':'application/json'},...o,body:o.body?JSON.stringify(o.body):undefined}).then(r=>r.json());
 
-// ── Motor ────────────────────────────────
-function getSteps() { return parseInt(document.getElementById('stepsSlider').value) || 0; }
-function motorFwd()  { api('/api/motor/forward', {method:'POST', body:{steps:getSteps()}}); }
-function motorRev()  { api('/api/motor/reverse', {method:'POST', body:{steps:getSteps()||200}}); }
-function motorStop() { api('/api/motor/stop',    {method:'POST'}); }
-function setSpeed(v) {
-  const d = v / 10000;
-  document.getElementById('speedVal').textContent = (d*1000).toFixed(1)+'ms';
-  api('/api/motor/speed', {method:'POST', body:{delay:d}});
+// Motor
+function manualStep(dir){
+  const s=document.getElementById('mStepper').value;
+  const steps=parseInt(document.getElementById('mSteps').value);
+  const delay=parseInt(document.getElementById('mDelay').value)/10000;
+  document.getElementById('motorResult').textContent='Running...';
+  api('/api/motor/step',{method:'POST',body:{stepper:parseInt(s),direction:dir,steps,delay}})
+    .then(d=>{document.getElementById('motorResult').textContent=d.ok?`Done: ${d.steps_taken} steps`:`Error: ${d.error}`})
+    .catch(e=>{document.getElementById('motorResult').textContent='Request failed'});
+}
+function manualRunBeam(dir,beam){
+  const s=document.getElementById('mStepper').value;
+  const delay=parseInt(document.getElementById('mDelay').value)/10000;
+  document.getElementById('motorResult').textContent='Running until beam...';
+  api('/api/motor/run_until_beam',{method:'POST',body:{stepper:parseInt(s),direction:dir,beam,delay}})
+    .then(d=>{document.getElementById('motorResult').textContent=d.ok?(d.success?`Beam hit after ${d.steps_taken} steps`:`Beam NOT hit (${d.steps_taken} steps)`):`Error: ${d.error}`})
+    .catch(e=>{document.getElementById('motorResult').textContent='Request failed'});
 }
 
-// ── Sim ──────────────────────────────────
-function simBeam(b) { api('/api/sim/beam', {method:'POST', body:{blocked:b}}); }
+// Sequence
+function seqStep(n){
+  api(`/api/seq/step${n}`,{method:'POST'}).then(d=>{
+    const el=document.getElementById(`ss${n}status`);
+    el.classList.add('show');
+    el.textContent=d.ok?'Started...':d.msg||d.error||'Failed';
+    el.style.color=d.ok?'var(--g)':'var(--r)';
+  });
+}
+function seqStop(){api('/api/seq/stop',{method:'POST'})}
 
-function simScan() {
-  api('/api/sim/scan', {method:'POST', body:{
-    name:       document.getElementById('simName').value,
-    scryfallId: document.getElementById('simSfId').value,
-    price:      parseFloat(document.getElementById('simPrice').value) || 0,
-    rarity:     document.getElementById('simRarity').value,
+// Sim
+function simBeam(beam,blocked){api('/api/sim/beam',{method:'POST',body:{beam,blocked}})}
+function simScan(){
+  api('/api/sim/scan',{method:'POST',body:{
+    name:document.getElementById('simName').value,
+    scryfallId:document.getElementById('simSfId').value,
+    price:parseFloat(document.getElementById('simPrice').value)||0,
+    rarity:document.getElementById('simRarity').value,
   }});
 }
 
-// ── Scryfall Search ──────────────────────
-let searchTimer = null;
-function debouncedSearch(q) {
-  clearTimeout(searchTimer);
-  if (q.length < 2) { document.getElementById('searchResults').classList.remove('open'); return; }
-  searchTimer = setTimeout(() => {
-    fetch('/api/scryfall/search?q=' + encodeURIComponent(q))
-      .then(r => r.json())
-      .then(cards => {
-        const el = document.getElementById('searchResults');
-        if (!cards.length || cards.error) { el.classList.remove('open'); return; }
-        el.innerHTML = cards.map(c => `
-          <div class="sr-item" onclick="pickCard(${JSON.stringify(c).replace(/"/g,'&quot;')})">
-            ${c.image ? `<img src="${c.image}" alt="">` : ''}
-            <div>
-              <div class="sr-name">${c.name}</div>
-              <div class="sr-set">${c.set_name} · ${c.rarity}</div>
-            </div>
-          </div>
-        `).join('');
-        el.classList.add('open');
-      });
-  }, 300);
+// Scryfall search
+let st=null;
+function debSearch(q){
+  clearTimeout(st);
+  if(q.length<2){document.getElementById('searchRes').classList.remove('open');return}
+  st=setTimeout(()=>{
+    fetch('/api/scryfall/search?q='+encodeURIComponent(q)).then(r=>r.json()).then(cards=>{
+      const el=document.getElementById('searchRes');
+      if(!cards.length||cards.error){el.classList.remove('open');return}
+      el.innerHTML=cards.map(c=>`<div class="sri" onclick='pickCard(${JSON.stringify(c).replace(/'/g,"&#39;")})'>${c.image?`<img src="${c.image}">`:''}<div><div class="srn">${c.name}</div><div class="srs">${c.set_name} · ${c.rarity}</div></div></div>`).join('');
+      el.classList.add('open');
+    });
+  },300);
 }
-
-function pickCard(c) {
-  document.getElementById('simName').value = c.name;
-  document.getElementById('simSfId').value = c.id;
-  document.getElementById('simRarity').value = c.rarity;
-  document.getElementById('simSearch').value = c.name;
-  document.getElementById('searchResults').classList.remove('open');
+function pickCard(c){
+  document.getElementById('simName').value=c.name;
+  document.getElementById('simSfId').value=c.id;
+  document.getElementById('simRarity').value=c.rarity;
+  document.getElementById('simSearch').value=c.name;
+  document.getElementById('searchRes').classList.remove('open');
 }
+document.addEventListener('click',e=>{if(!e.target.closest('.swrap'))document.getElementById('searchRes')?.classList.remove('open')});
 
-// Close search on outside click
-document.addEventListener('click', e => {
-  if (!e.target.closest('.search-wrap'))
-    document.getElementById('searchResults')?.classList.remove('open');
-});
-
-// ── Color pips HTML ──────────────────────
-function colorPips(arr) {
-  if (!arr || !arr.length) return '<span style="color:var(--text-dim)">C</span>';
-  return arr.map(c => `<span class="cpip ${c}">${c}</span>`).join('');
+// Color pips
+function cpips(a){
+  if(!a||!a.length)return'<span class="cpip C">C</span>';
+  return a.map(c=>`<span class="cpip ${c}">${c}</span>`).join('');
 }
+function rl(r){return{common:'Common',uncommon:'Uncommon',rare:'Rare',mythic:'Mythic'}[r]||r||'?'}
 
-function rarityLabel(r) {
-  const map = {common:'C', uncommon:'U', rare:'R', mythic:'M', special:'S', bonus:'B'};
-  return map[r] || r || '?';
+// Rules
+let rules=[];
+const FIELDS=[{v:'price',l:'Price'},{v:'cmc',l:'CMC'},{v:'rarity',l:'Rarity'},{v:'color_identity',l:'Color ID'},{v:'colors',l:'Colors'},{v:'type_line',l:'Type Line'},{v:'name',l:'Name'},{v:'edition',l:'Edition'},{v:'keywords',l:'Keywords'},{v:'finish',l:'Finish'}];
+const OPS=['>','<','>=','<=','==','!=','contains'];
+function renderRules(){
+  document.getElementById('rulesScroll').innerHTML=rules.map((r,i)=>`<div class="rc"><input class="rn" value="${r.name||''}" onchange="rules[${i}].name=this.value" placeholder="Label"><select class="rf" onchange="rules[${i}].field=this.value">${FIELDS.map(f=>`<option value="${f.v}"${r.field===f.v?' selected':''}>${f.l}</option>`).join('')}</select><select class="ro" onchange="rules[${i}].operator=this.value">${OPS.map(o=>`<option${r.operator===o?' selected':''}>${o}</option>`).join('')}</select><input class="rv" value="${r.value}" onchange="rules[${i}].value=isNaN(this.value)||this.value===''?this.value:parseFloat(this.value)" placeholder="value"><span class="ra">→</span><input class="rp" type="number" value="${r.pile}" onchange="rules[${i}].pile=parseInt(this.value)" title="Pile #"><button class="btn sm r" onclick="rules.splice(${i},1);renderRules()">✕</button></div>`).join('');
 }
+function addRule(){rules.push({name:'New',field:'price',operator:'>',value:1,pile:0});renderRules()}
+function saveRules(){api('/api/rules',{method:'POST',body:rules}).then(()=>{alert('Saved!')})}
+api('/api/rules').then(d=>{rules=d;renderRules()});
 
-// ── Rules ────────────────────────────────
-let rules = [];
-const FIELDS = [
-  {v:'price',          l:'Price'},
-  {v:'cmc',            l:'CMC'},
-  {v:'rarity',         l:'Rarity'},
-  {v:'color_identity', l:'Color Identity'},
-  {v:'colors',         l:'Colors'},
-  {v:'type_line',      l:'Type Line'},
-  {v:'name',           l:'Name'},
-  {v:'edition',        l:'Edition'},
-  {v:'keywords',       l:'Keywords'},
-  {v:'finish',         l:'Finish'},
-];
-const OPS = ['>', '<', '>=', '<=', '==', '!=', 'contains'];
-
-function renderRules() {
-  const el = document.getElementById('rulesScroll');
-  el.innerHTML = rules.map((r,i) => `
-    <div class="rule-card">
-      <input class="rule-name" value="${r.name||''}" onchange="rules[${i}].name=this.value" placeholder="Label">
-      <select class="rule-field" onchange="rules[${i}].field=this.value">
-        ${FIELDS.map(f=>`<option value="${f.v}" ${r.field===f.v?'selected':''}>${f.l}</option>`).join('')}
-      </select>
-      <select class="rule-op" onchange="rules[${i}].operator=this.value">
-        ${OPS.map(o=>`<option ${r.operator===o?'selected':''}>${o}</option>`).join('')}
-      </select>
-      <input class="rule-val" value="${r.value}" onchange="rules[${i}].value=isNaN(this.value)||this.value===''?this.value:parseFloat(this.value)" placeholder="value">
-      <span class="rule-arrow">→</span>
-      <input class="rule-pile" type="number" value="${r.pile}" onchange="rules[${i}].pile=parseInt(this.value)" title="Pile #">
-      <button class="btn sm r rule-del" onclick="rules.splice(${i},1);renderRules()">✕</button>
-    </div>
-  `).join('');
-}
-
-function addRule() {
-  rules.push({name:'New Rule', field:'price', operator:'>', value:1, pile:0});
-  renderRules();
-  document.getElementById('rulesScroll').scrollTop = 99999;
-}
-
-function saveRules() {
-  api('/api/rules', {method:'POST', body:rules}).then(() => {
-    const btn = event.target;
-    btn.textContent = '✓ Saved';
-    setTimeout(() => btn.textContent = '💾 Save', 1200);
-  });
-}
-
-api('/api/rules').then(d => { rules = d; renderRules(); });
-
-// ── Scan Log ─────────────────────────────
-function renderLog(scans) {
-  const el = document.getElementById('logList');
-  document.getElementById('totalCount').textContent = scans.length;
-  if (!scans.length) { el.innerHTML = '<div class="log-empty">No scans yet</div>'; return; }
-  el.innerHTML = scans.slice().reverse().map(s => {
-    const ci = (s.color_identity||[]).join('');
-    const time = s.timestamp ? s.timestamp.split('T')[1]?.substring(0,8) : '';
-    return `
-      <div class="log-row">
-        <span class="log-name">${s.name}</span>
-        <span class="log-detail">${ci || '—'} · CMC ${s.cmc ?? '?'} · $${(s.price||0).toFixed(2)}</span>
-        <span class="log-detail">${time}</span>
-        <span class="log-pile">Pile ${s.pile}</span>
-      </div>`;
+// Log
+function renderLog(scans){
+  document.getElementById('totalCt').textContent=scans.length;
+  const el=document.getElementById('logList');
+  if(!scans.length){el.innerHTML='<div class="le">No scans yet</div>';return}
+  el.innerHTML=scans.slice().reverse().map(s=>{
+    const ci=(s.color_identity||[]).join('');
+    const t=s.timestamp?s.timestamp.split('T')[1]?.substring(0,8):'';
+    return`<div class="lr"><span class="lnm">${s.name}</span><span class="ld">${ci||'C'} · CMC ${s.cmc??'?'} · $${(s.price||0).toFixed(2)}</span><span class="ld">${t}</span><span class="lp">Pile ${s.pile}</span></div>`;
   }).join('');
 }
+function clearScans(){if(confirm('Clear?'))api('/api/scans/clear',{method:'POST'}).then(poll)}
 
-function clearScans() {
-  if (confirm('Clear all scan history?'))
-    api('/api/scans/clear', {method:'POST'}).then(poll);
+// Card display
+let lastTs='';
+function renderCard(c){
+  if(!c)return;
+  const w=document.getElementById('cardImgArea');
+  w.innerHTML=c.image_uri?`<img src="${c.image_uri}" alt="${c.name}">`:`<div class="cph">${c.name}<br><span style="font-size:10px">${c.scryfallId?'Image loading...':'No Scryfall ID'}</span></div>`;
+  document.getElementById('cardInfo').style.display='block';
+  document.getElementById('cName').textContent=c.name;
+  document.getElementById('cType').textContent=c.type_line||c.cardType||'';
+  document.getElementById('cCmc').textContent=c.cmc??'—';
+  document.getElementById('cPrice').textContent='$'+(c.price||0).toFixed(2);
+  document.getElementById('cColors').innerHTML=cpips(c.color_identity);
+  document.getElementById('cRarity').textContent=rl(c.rarity);
+  document.getElementById('cPile').innerHTML=`<span class="pbadge">→ Pile ${c.pile}</span>`;
 }
 
-// ── Card display ─────────────────────────
-function renderCard(c) {
-  if (!c) return;
-  const wrap = document.getElementById('cardImgArea');
-  if (c.image_uri) {
-    wrap.innerHTML = `<img src="${c.image_uri}" alt="${c.name}">`;
-  } else {
-    wrap.innerHTML = `<div class="card-img-placeholder">${c.name}<br><span style="font-size:10px">No image available</span></div>`;
-  }
+// Polling
+function poll(){
+  api('/api/status').then(d=>{
+    // Beams
+    const bi=document.getElementById('beamInds');
+    bi.innerHTML=Object.entries(d.beams||{}).map(([n,b])=>`<div class="ind"><span class="dot ${b?'wrn':''}"></span>${n}: ${b?'BLOCKED':'clear'}</div>`).join('');
 
-  document.getElementById('cardInfo').style.display = 'block';
-  document.getElementById('cardName').textContent = c.name;
-  document.getElementById('cardType').textContent = c.type_line || c.cardType || '';
-  document.getElementById('cardCmc').textContent = c.cmc ?? '—';
-  document.getElementById('cardPrice').textContent = '$' + (c.price || 0).toFixed(2);
-  document.getElementById('cardColors').innerHTML = colorPips(c.color_identity);
-  document.getElementById('cardRarity').textContent = rarityLabel(c.rarity);
-  document.getElementById('cardPileBadge').innerHTML =
-    `<span class="pile-badge">→ Pile ${c.pile}</span>`;
-}
+    // Sim beam buttons
+    const sb=document.getElementById('simBeamBtns');
+    if(sb){
+      const beams=Object.keys(d.beams||{});
+      if(!sb.children.length){
+        sb.innerHTML=beams.map(b=>`<button class="btn sm" onclick="simBeam('${b}',true)">Block ${b}</button><button class="btn sm" onclick="simBeam('${b}',false)">Clear ${b}</button>`).join('');
+      }
+    }
 
-// ── Polling ──────────────────────────────
-let lastCardTs = '';
+    // Sequence status
+    if(d.seq_status){
+      const s1=document.getElementById('ss1status');
+      s1.classList.add('show');
+      s1.textContent=d.seq_status;
+      s1.style.color=d.seq_error?'var(--r)':'var(--g)';
+    }
 
-function poll() {
-  api('/api/status').then(d => {
-    // Motor indicators
-    const dM = document.getElementById('dotMotor');
-    const lM = document.getElementById('lblMotor');
-    dM.className = 'dot ' + (d.running ? 'on' : '');
-    lM.textContent = d.running ? (d.direction===1 ? 'Forward' : 'Reverse') : 'Stopped';
-
-    const dB = document.getElementById('dotBeam');
-    const lB = document.getElementById('lblBeam');
-    dB.className = 'dot ' + (d.beam_blocked ? 'wrn' : '');
-    lB.textContent = d.beam_blocked ? 'Blocked' : 'Clear';
-
-    const dC = document.getElementById('dotCard');
-    const lC = document.getElementById('lblCard');
-    dC.className = 'dot ' + (d.card_detected ? 'err' : '');
-    lC.textContent = d.card_detected ? 'Detected' : 'No card';
-
-    // Header dots
-    document.getElementById('hd1').style.background = d.running ? 'var(--accent)' : 'var(--surface3)';
-    document.getElementById('hd2').style.background = d.beam_blocked ? 'var(--yellow)' : 'var(--surface3)';
-    document.getElementById('hd3').style.background = d.card_detected ? 'var(--red)' : 'var(--surface3)';
-
-    // Current card
-    if (d.current_card && d.current_card.timestamp !== lastCardTs) {
-      lastCardTs = d.current_card.timestamp;
+    // Card
+    if(d.current_card&&d.current_card.timestamp!==lastTs){
+      lastTs=d.current_card.timestamp;
       renderCard(d.current_card);
     }
   });
-
   api('/api/scans').then(renderLog);
 }
-
-setInterval(poll, 600);
+setInterval(poll,700);
 poll();
 </script>
 </body>

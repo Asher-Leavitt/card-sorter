@@ -2,20 +2,20 @@
 Card Sorter Control System
 ===========================
 Runs on laptop (simulated GPIO) or Raspberry Pi Zero 2 W (real GPIO).
-Integrates with Delver webhooks + Scryfall API for card data enrichment.
 
 Setup:
   pip install flask requests
-  python app.py
-
-Then open http://localhost:5000 in your browser.
+  python app.py          # laptop simulation
+  sudo python app.py     # Raspberry Pi (sudo needed for GPIO)
 """
 
 import threading
 import time
 import json
 import os
-import requests as http_requests  # renamed to avoid clash with flask.request
+import sys
+import traceback
+import requests as http_requests
 from datetime import datetime
 from flask import Flask, request, jsonify, render_template
 
@@ -36,165 +36,166 @@ except ImportError:
 
         def __init__(self):
             self._pins = {}
-            self._beam_blocked = False
+            self._beams = {}
 
         def setmode(self, m): pass
         def setwarnings(self, f): pass
         def setup(self, pin, d, pull_up_down=None): self._pins[pin] = 0
         def output(self, pin, val): self._pins[pin] = val
+
         def input(self, pin):
-            if pin == 17:
-                return self.LOW if self._beam_blocked else self.HIGH
-            return self._pins.get(pin, self.HIGH)
+            if pin in self._beams:
+                return self.LOW if self._beams[pin] else self.HIGH
+            return self.HIGH
+
         def cleanup(self): self._pins.clear()
+
+        def sim_set_beam(self, pin, blocked):
+            self._beams[pin] = blocked
 
     GPIO = _FakeGPIO()
 
 
 # ---------------------------------------------------------------------------
-# PIN ASSIGNMENTS
+# PIN CONFIG — Change these to match YOUR wiring
 # ---------------------------------------------------------------------------
 
-STEP_PIN   = 18
-DIR_PIN    = 23
-SENSOR_PIN = 17
+PINS = {
+    "stepper1_step": 5,
+    "stepper1_dir":  6,
+    "stepper2_step": 24,
+    "stepper2_dir":  25,
+    "beam0":         4,   # home position
+    "beam1":         27,   # scan position
+}
 
 GPIO.setmode(GPIO.BCM)
 if not SIMULATED:
     GPIO.setwarnings(False)
-GPIO.setup(STEP_PIN, GPIO.OUT)
-GPIO.setup(DIR_PIN, GPIO.OUT)
-GPIO.setup(SENSOR_PIN, GPIO.IN, pull_up_down=GPIO.PUD_UP)
+
+for name, pin in PINS.items():
+    if "step" in name or "dir" in name:
+        GPIO.setup(pin, GPIO.OUT)
+    elif "beam" in name:
+        GPIO.setup(pin, GPIO.IN, pull_up_down=GPIO.PUD_UP)
+
+if SIMULATED:
+    for name, pin in PINS.items():
+        if "beam" in name:
+            GPIO.sim_set_beam(pin, False)
+
+print(f"[GPIO] Pins: {PINS}")
+
+
+# ---------------------------------------------------------------------------
+# STEPPER HELPERS
+# ---------------------------------------------------------------------------
+
+def step_motor(step_pin, dir_pin, direction, steps=1, delay=0.001):
+    GPIO.output(dir_pin, GPIO.HIGH if direction == 1 else GPIO.LOW)
+    taken = 0
+    for _ in range(steps):
+        GPIO.output(step_pin, GPIO.HIGH)
+        time.sleep(delay)
+        GPIO.output(step_pin, GPIO.LOW)
+        time.sleep(delay)
+        taken += 1
+    return taken
+
+
+def run_until_beam(step_pin, dir_pin, beam_pin, direction, delay=0.001, max_steps=50000):
+    GPIO.output(dir_pin, GPIO.HIGH if direction == 1 else GPIO.LOW)
+    taken = 0
+    for _ in range(max_steps):
+        if GPIO.input(beam_pin) == GPIO.LOW:
+            print(f"[STEPPER] Beam on pin {beam_pin} triggered after {taken} steps")
+            return True, taken
+        GPIO.output(step_pin, GPIO.HIGH)
+        time.sleep(delay)
+        GPIO.output(step_pin, GPIO.LOW)
+        time.sleep(delay)
+        taken += 1
+    print(f"[STEPPER] Max steps ({max_steps}) reached without beam trigger!")
+    return False, taken
 
 
 # ---------------------------------------------------------------------------
 # SCRYFALL API
 # ---------------------------------------------------------------------------
 
-SCRYFALL_CACHE = {}  # in-memory cache: scryfallId -> card data
+SCRYFALL_CACHE = {}
 
 def fetch_scryfall(scryfall_id):
-    """Fetch card data from Scryfall API. Returns dict or None."""
     if not scryfall_id:
+        print("[SCRYFALL] No scryfallId, skipping")
         return None
-
-    # Check cache first
     if scryfall_id in SCRYFALL_CACHE:
+        print(f"[SCRYFALL] Cache hit: {scryfall_id[:12]}...")
         return SCRYFALL_CACHE[scryfall_id]
 
     url = f"https://api.scryfall.com/cards/{scryfall_id}"
+    print(f"[SCRYFALL] Fetching {url}")
     try:
         resp = http_requests.get(url, headers={
             "User-Agent": "CardSorterPi/1.0",
             "Accept": "application/json",
-        }, timeout=5)
-
+        }, timeout=8)
+        print(f"[SCRYFALL] Status: {resp.status_code}")
         if resp.status_code == 200:
             data = resp.json()
             result = {
-                "cmc":            data.get("cmc", 0),
-                "colors":         data.get("colors", []),
+                "cmc": data.get("cmc", 0), "colors": data.get("colors", []),
                 "color_identity": data.get("color_identity", []),
-                "type_line":      data.get("type_line", ""),
-                "mana_cost":      data.get("mana_cost", ""),
-                "oracle_text":    data.get("oracle_text", ""),
-                "power":          data.get("power", ""),
-                "toughness":      data.get("toughness", ""),
-                "keywords":       data.get("keywords", []),
-                "set_name":       data.get("set_name", ""),
-                "rarity":         data.get("rarity", ""),
-                "image_uri":      "",
-                "image_art_crop": "",
+                "type_line": data.get("type_line", ""), "mana_cost": data.get("mana_cost", ""),
+                "oracle_text": data.get("oracle_text", ""), "power": data.get("power", ""),
+                "toughness": data.get("toughness", ""), "keywords": data.get("keywords", []),
+                "set_name": data.get("set_name", ""), "rarity": data.get("rarity", ""),
+                "image_uri": "", "image_art_crop": "",
             }
-
-            # Handle image URIs (double-faced cards have faces instead)
-            image_uris = data.get("image_uris")
-            if image_uris:
-                result["image_uri"]      = image_uris.get("large", image_uris.get("normal", ""))
-                result["image_art_crop"] = image_uris.get("art_crop", "")
+            iu = data.get("image_uris")
+            if iu:
+                result["image_uri"] = iu.get("large", iu.get("normal", ""))
+                result["image_art_crop"] = iu.get("art_crop", "")
             elif data.get("card_faces"):
-                face = data["card_faces"][0]
-                face_imgs = face.get("image_uris", {})
-                result["image_uri"]      = face_imgs.get("large", face_imgs.get("normal", ""))
-                result["image_art_crop"] = face_imgs.get("art_crop", "")
-
+                fi = data["card_faces"][0].get("image_uris", {})
+                result["image_uri"] = fi.get("large", fi.get("normal", ""))
+                result["image_art_crop"] = fi.get("art_crop", "")
             SCRYFALL_CACHE[scryfall_id] = result
-            print(f"[SCRYFALL] Fetched: {data.get('name', '?')} — CMC {result['cmc']}, colors {result['colors']}")
+            print(f"[SCRYFALL] OK: {data.get('name','?')} | image={'YES' if result['image_uri'] else 'NO'}")
             return result
         else:
-            print(f"[SCRYFALL] Error {resp.status_code} for {scryfall_id}")
+            print(f"[SCRYFALL] Error {resp.status_code}: {resp.text[:200]}")
             return None
-
     except Exception as e:
-        print(f"[SCRYFALL] Request failed: {e}")
+        print(f"[SCRYFALL] FAILED: {e}")
         return None
 
 
 def enrich_card(delver_card):
-    """Take raw Delver card data + fetch Scryfall enrichment. Returns merged dict."""
     scryfall_id = delver_card.get("scryfallId", "")
-    scryfall_data = fetch_scryfall(scryfall_id)
-
+    sf = fetch_scryfall(scryfall_id)
     enriched = {
-        # From Delver (always available)
-        "name":         delver_card.get("name", "Unknown"),
-        "edition":      delver_card.get("edition", ""),
-        "editionCode":  delver_card.get("editionCode", ""),
-        "number":       delver_card.get("number", ""),
-        "rarity":       delver_card.get("rarity", ""),
-        "price":        delver_card.get("price", 0),
-        "fmtPrice":     delver_card.get("fmtPrice", ""),
-        "finish":       delver_card.get("finish", "regular"),
-        "cardType":     delver_card.get("cardType", ""),
-        "scryfallId":   scryfall_id,
+        "name": delver_card.get("name", "Unknown"),
+        "edition": delver_card.get("edition", ""),
+        "editionCode": delver_card.get("editionCode", ""),
+        "number": delver_card.get("number", ""),
+        "rarity": delver_card.get("rarity", ""),
+        "price": delver_card.get("price", 0),
+        "fmtPrice": delver_card.get("fmtPrice", ""),
+        "finish": delver_card.get("finish", "regular"),
+        "cardType": delver_card.get("cardType", ""),
+        "scryfallId": scryfall_id,
     }
-
-    if scryfall_data:
-        # From Scryfall (richer data)
-        enriched["cmc"]            = scryfall_data["cmc"]
-        enriched["colors"]         = scryfall_data["colors"]
-        enriched["color_identity"] = scryfall_data["color_identity"]
-        enriched["type_line"]      = scryfall_data["type_line"]
-        enriched["mana_cost"]      = scryfall_data["mana_cost"]
-        enriched["oracle_text"]    = scryfall_data["oracle_text"]
-        enriched["power"]          = scryfall_data["power"]
-        enriched["toughness"]      = scryfall_data["toughness"]
-        enriched["keywords"]       = scryfall_data["keywords"]
-        enriched["image_uri"]      = scryfall_data["image_uri"]
-        enriched["image_art_crop"] = scryfall_data["image_art_crop"]
+    if sf:
+        enriched.update(sf)
     else:
-        # Fallback — use what Delver gives us
-        enriched["cmc"]            = 0
-        enriched["colors"]         = []
-        enriched["color_identity"] = []
-        enriched["type_line"]      = delver_card.get("cardType", "")
-        enriched["mana_cost"]      = ""
-        enriched["oracle_text"]    = ""
-        enriched["power"]          = ""
-        enriched["toughness"]      = ""
-        enriched["keywords"]       = []
-        enriched["image_uri"]      = ""
-        enriched["image_art_crop"] = ""
-
+        enriched.update({
+            "cmc": 0, "colors": [], "color_identity": [],
+            "type_line": delver_card.get("cardType", ""),
+            "mana_cost": "", "oracle_text": "", "power": "", "toughness": "",
+            "keywords": [], "image_uri": "", "image_art_crop": "",
+        })
     return enriched
-
-
-# ---------------------------------------------------------------------------
-# MOTOR STATE
-# ---------------------------------------------------------------------------
-
-class MotorState:
-    def __init__(self):
-        self.lock = threading.Lock()
-        self.running = False
-        self.direction = 1
-        self.speed = 0.001
-        self.steps_taken = 0
-        self.steps_target = 0
-        self.card_detected = False
-        self.stop_on_beam = True
-
-motor = MotorState()
 
 
 # ---------------------------------------------------------------------------
@@ -203,8 +204,7 @@ motor = MotorState()
 
 scan_log = []
 scan_log_lock = threading.Lock()
-
-current_card = {"card": None}  # mutable container so threads can update
+current_card = {"card": None}
 current_card_lock = threading.Lock()
 
 
@@ -213,13 +213,12 @@ current_card_lock = threading.Lock()
 # ---------------------------------------------------------------------------
 
 RULES_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "rules.json")
-
 DEFAULT_RULES = [
-    {"name": "High Value",     "field": "price",          "operator": ">",        "value": 5,    "pile": 1},
-    {"name": "Mythics",        "field": "rarity",         "operator": "==",       "value": "mythic", "pile": 2},
-    {"name": "Rares",          "field": "rarity",         "operator": "==",       "value": "rare",   "pile": 3},
-    {"name": "Blue Cards",     "field": "color_identity", "operator": "contains", "value": "U",  "pile": 4},
-    {"name": "Creatures",      "field": "type_line",      "operator": "contains", "value": "Creature", "pile": 5},
+    {"name": "High Value",  "field": "price",          "operator": ">",        "value": 5,          "pile": 1},
+    {"name": "Mythics",     "field": "rarity",         "operator": "==",       "value": "mythic",   "pile": 2},
+    {"name": "Rares",       "field": "rarity",         "operator": "==",       "value": "rare",     "pile": 3},
+    {"name": "Blue Cards",  "field": "color_identity", "operator": "contains", "value": "U",        "pile": 4},
+    {"name": "Creatures",   "field": "type_line",      "operator": "contains", "value": "Creature", "pile": 5},
 ]
 
 def load_rules():
@@ -233,36 +232,19 @@ def save_rules(rules):
         json.dump(rules, f, indent=2)
 
 def evaluate_rules(card, rules):
-    """Return pile number for a card, or 0 (default) if no rule matches."""
     for rule in rules:
-        field = rule["field"]
-        op = rule["operator"]
-        target = rule["value"]
+        field = rule["field"]; op = rule["operator"]; target = rule["value"]
         field_val = card.get(field)
-
-        if field_val is None:
-            continue
-
-        # Handle array fields (colors, color_identity, keywords)
+        if field_val is None: continue
         if isinstance(field_val, list):
             if op == "contains":
                 if str(target).upper() in [str(v).upper() for v in field_val]:
                     return rule["pile"]
             elif op == "==":
-                # Exact match: compare sorted
-                target_list = [t.strip().upper() for t in str(target).split(",")]
-                field_list = [str(v).upper() for v in field_val]
-                if sorted(target_list) == sorted(field_list):
-                    return rule["pile"]
-            elif op == "len==":
-                try:
-                    if len(field_val) == int(target):
-                        return rule["pile"]
-                except (ValueError, TypeError):
-                    pass
+                tl = sorted(t.strip().upper() for t in str(target).split(","))
+                fl = sorted(str(v).upper() for v in field_val)
+                if tl == fl: return rule["pile"]
             continue
-
-        # Coerce types for numeric comparison
         try:
             if isinstance(target, str) and target.replace(".", "", 1).replace("-", "", 1).isdigit():
                 target = float(target)
@@ -270,65 +252,50 @@ def evaluate_rules(card, rules):
                 field_val = float(field_val)
             if isinstance(field_val, (int, float)) and isinstance(target, str):
                 target = float(target)
-        except (ValueError, TypeError):
-            pass
-
+        except (ValueError, TypeError): pass
         match = False
-        if op == ">"  : match = field_val > target
-        elif op == "<"  : match = field_val < target
+        if op == ">": match = field_val > target
+        elif op == "<": match = field_val < target
         elif op == ">=": match = field_val >= target
         elif op == "<=": match = field_val <= target
         elif op == "==": match = str(field_val).lower() == str(target).lower()
         elif op == "!=": match = str(field_val).lower() != str(target).lower()
-        elif op == "contains":
-            match = str(target).lower() in str(field_val).lower()
-
-        if match:
-            return rule["pile"]
-
+        elif op == "contains": match = str(target).lower() in str(field_val).lower()
+        if match: return rule["pile"]
     return 0
 
 
 # ---------------------------------------------------------------------------
-# MOTOR THREAD
+# SEQUENCE STATE
 # ---------------------------------------------------------------------------
 
-def motor_loop():
-    while True:
-        with motor.lock:
-            running   = motor.running
-            direction = motor.direction
-            speed     = motor.speed
-            stop_beam = motor.stop_on_beam
-            target    = motor.steps_target
+class SequenceState:
+    def __init__(self):
+        self.lock = threading.Lock()
+        self.running = False
+        self.current_step = 0
+        self.status_msg = "Idle"
+        self.error = ""
+        self.steps_taken = 0
 
-        if running:
-            if direction == 1 and stop_beam and GPIO.input(SENSOR_PIN) == GPIO.LOW:
-                with motor.lock:
-                    motor.running = False
-                    motor.card_detected = True
-                print("[MOTOR] Beam broken — card detected, motor stopped")
-                continue
+seq = SequenceState()
 
-            GPIO.output(DIR_PIN, GPIO.HIGH if direction == 1 else GPIO.LOW)
-            GPIO.output(STEP_PIN, GPIO.HIGH)
-            time.sleep(speed)
-            GPIO.output(STEP_PIN, GPIO.LOW)
-            time.sleep(speed)
-
-            with motor.lock:
-                motor.steps_taken += 1
-                if target > 0 and motor.steps_taken >= target:
-                    motor.running = False
-                    motor.steps_taken = 0
-                    motor.steps_target = 0
-                    print(f"[MOTOR] Completed {target} steps — stopped")
+def sequence_step1_home():
+    with seq.lock:
+        seq.running = True; seq.current_step = 1
+        seq.status_msg = "Homing: stepper 1 CCW → beam 0"; seq.error = ""
+    print("[SEQ] Step 1: Homing stepper 1 CCW until beam 0...")
+    success, steps = run_until_beam(
+        PINS["stepper1_step"], PINS["stepper1_dir"], PINS["beam0"],
+        direction=-1, delay=0.001, max_steps=50000)
+    with seq.lock:
+        seq.steps_taken = steps; seq.running = False
+        if success:
+            seq.status_msg = f"Homed OK ({steps} steps)"; seq.error = ""
         else:
-            time.sleep(0.01)
-
-
-motor_thread = threading.Thread(target=motor_loop, daemon=True)
-motor_thread.start()
+            seq.status_msg = "Home FAILED"
+            seq.error = f"Beam 0 never triggered after {steps} steps"
+    print(f"[SEQ] Step 1 {'OK' if success else 'FAILED'}: {steps} steps")
 
 
 # ---------------------------------------------------------------------------
@@ -337,118 +304,148 @@ motor_thread.start()
 
 app = Flask(__name__, template_folder=os.path.join(os.path.dirname(os.path.abspath(__file__)), "templates"))
 
+def add_cors(response):
+    response.headers["Access-Control-Allow-Origin"] = "*"
+    response.headers["Access-Control-Allow-Methods"] = "POST, GET, OPTIONS"
+    response.headers["Access-Control-Allow-Headers"] = "Content-Type"
+    return response
 
-# -- Dashboard page --------------------------------------------------------
 
-@app.route("/")
+# -- Webhook handler (shared) -----------------------------------------------
+
+def handle_webhook():
+    if request.method == "OPTIONS":
+        return add_cors(jsonify({"message": "CORS preflight"})), 200
+    data = request.json or {}
+    event_type = data.get("type", "")
+    print(f"\n[WEBHOOK] Event: {event_type}")
+
+    if event_type == "card_scanned":
+        cards = data.get("cards", [])
+        if not cards:
+            return add_cors(jsonify({"status": "no cards"})), 200
+        raw = cards[0]
+        print(f"[WEBHOOK] Card: {raw.get('name')}, scryfallId={raw.get('scryfallId','NONE')}")
+        enriched = enrich_card(raw)
+        rules = load_rules()
+        pile = evaluate_rules(enriched, rules)
+        entry = {**enriched, "timestamp": datetime.now().isoformat(), "pile": pile}
+        with scan_log_lock: scan_log.append(entry)
+        with current_card_lock: current_card["card"] = entry
+        print(f"[WEBHOOK] ✓ {entry['name']} → Pile {pile} | image={'YES' if entry.get('image_uri') else 'NO'}")
+        return add_cors(jsonify({"status": "ok", "pile": pile, "card": entry["name"]})), 200
+
+    elif event_type == "scanner_started": print("[WEBHOOK] Scanner started")
+    elif event_type == "scanner_paused": print("[WEBHOOK] Scanner paused")
+    else:
+        print(f"[WEBHOOK] Unknown: {event_type}")
+        print(f"[WEBHOOK] Payload: {json.dumps(data)[:500]}")
+    return add_cors(jsonify({"status": "ok"})), 200
+
+
+# -- Routes ---------------------------------------------------------------
+
+@app.route("/", methods=["GET", "POST", "OPTIONS"])
 def index():
-    return render_template("dashboard.html", simulated=SIMULATED)
+    if request.method == "GET":
+        return render_template("dashboard.html", simulated=SIMULATED)
+    return handle_webhook()
 
-
-# -- Status API ------------------------------------------------------------
+@app.route("/webhook", methods=["POST", "OPTIONS"])
+def webhook_route():
+    return handle_webhook()
 
 @app.route("/api/status")
 def api_status():
-    with motor.lock:
-        data = {
-            "running":       motor.running,
-            "direction":     motor.direction,
-            "speed":         motor.speed,
-            "steps_taken":   motor.steps_taken,
-            "card_detected": motor.card_detected,
-            "beam_blocked":  GPIO.input(SENSOR_PIN) == GPIO.LOW,
-            "simulated":     SIMULATED,
-        }
-    with scan_log_lock:
-        data["total_scans"] = len(scan_log)
-    with current_card_lock:
-        data["current_card"] = current_card["card"]
-    return jsonify(data)
+    beams = {}
+    for name, pin in PINS.items():
+        if "beam" in name:
+            beams[name] = GPIO.input(pin) == GPIO.LOW
+    with seq.lock:
+        sd = {"seq_running": seq.running, "seq_step": seq.current_step,
+              "seq_status": seq.status_msg, "seq_error": seq.error, "seq_steps": seq.steps_taken}
+    with scan_log_lock: total = len(scan_log)
+    with current_card_lock: card = current_card["card"]
+    return jsonify({"simulated": SIMULATED, "beams": beams,
+                     "total_scans": total, "current_card": card, **sd})
 
-
-# -- Motor control API -----------------------------------------------------
-
-@app.route("/api/motor/forward", methods=["POST"])
-def motor_forward():
+@app.route("/api/motor/step", methods=["POST"])
+def motor_step_api():
     body = request.json or {}
-    steps = body.get("steps", 0)
-    with motor.lock:
-        motor.direction = 1
-        motor.running = True
-        motor.card_detected = False
-        motor.steps_taken = 0
-        motor.steps_target = steps
-        motor.stop_on_beam = True
-    return jsonify({"ok": True, "action": "forward", "steps": steps})
+    stepper = body.get("stepper", 1); direction = body.get("direction", 1)
+    steps = body.get("steps", 200); delay = body.get("delay", 0.001)
+    pstep = PINS[f"stepper{stepper}_step"]; pdir = PINS[f"stepper{stepper}_dir"]
+    print(f"[MOTOR] S{stepper}: {steps}x dir={direction}")
+    try:
+        taken = step_motor(pstep, pdir, direction, steps, delay)
+        return jsonify({"ok": True, "steps_taken": taken})
+    except Exception as e:
+        print(f"[MOTOR] ERROR: {e}"); traceback.print_exc()
+        return jsonify({"ok": False, "error": str(e)}), 500
 
-@app.route("/api/motor/reverse", methods=["POST"])
-def motor_reverse():
+@app.route("/api/motor/run_until_beam", methods=["POST"])
+def motor_run_until_beam_api():
     body = request.json or {}
-    steps = body.get("steps", 200)
-    with motor.lock:
-        motor.direction = -1
-        motor.running = True
-        motor.card_detected = False
-        motor.steps_taken = 0
-        motor.steps_target = steps
-        motor.stop_on_beam = False
-    return jsonify({"ok": True, "action": "reverse", "steps": steps})
+    stepper = body.get("stepper", 1); beam = body.get("beam", "beam0")
+    direction = body.get("direction", -1); delay = body.get("delay", 0.001)
+    pstep = PINS[f"stepper{stepper}_step"]; pdir = PINS[f"stepper{stepper}_dir"]
+    pbeam = PINS[beam]
+    print(f"[MOTOR] S{stepper} → {beam}, dir={direction}")
+    try:
+        success, taken = run_until_beam(pstep, pdir, pbeam, direction, delay)
+        return jsonify({"ok": True, "success": success, "steps_taken": taken})
+    except Exception as e:
+        print(f"[MOTOR] ERROR: {e}"); traceback.print_exc()
+        return jsonify({"ok": False, "error": str(e)}), 500
 
-@app.route("/api/motor/stop", methods=["POST"])
-def motor_stop():
-    with motor.lock:
-        motor.running = False
-    return jsonify({"ok": True, "action": "stop"})
+@app.route("/api/seq/step1", methods=["POST"])
+def seq_step1():
+    with seq.lock:
+        if seq.running:
+            return jsonify({"ok": False, "error": "Already running"}), 409
+    threading.Thread(target=sequence_step1_home, daemon=True).start()
+    return jsonify({"ok": True, "step": 1})
 
-@app.route("/api/motor/speed", methods=["POST"])
-def motor_speed():
-    body = request.json or {}
-    delay = body.get("delay", 0.001)
-    delay = max(0.0003, min(0.01, delay))
-    with motor.lock:
-        motor.speed = delay
-    return jsonify({"ok": True, "speed": delay})
+@app.route("/api/seq/step2", methods=["POST"])
+def seq_step2():
+    return jsonify({"ok": False, "step": 2, "msg": "Not implemented yet"}), 501
 
+@app.route("/api/seq/step3", methods=["POST"])
+def seq_step3():
+    return jsonify({"ok": False, "step": 3, "msg": "Not implemented yet"}), 501
 
-# -- Beam simulation -------------------------------------------------------
+@app.route("/api/seq/stop", methods=["POST"])
+def seq_stop():
+    with seq.lock: seq.running = False; seq.status_msg = "Stopped"
+    return jsonify({"ok": True})
 
 @app.route("/api/sim/beam", methods=["POST"])
 def sim_beam():
     if not SIMULATED:
-        return jsonify({"ok": False, "error": "Not in simulation mode"}), 400
+        return jsonify({"ok": False, "error": "Not sim mode"}), 400
     body = request.json or {}
-    GPIO._beam_blocked = body.get("blocked", False)
-    return jsonify({"ok": True, "beam_blocked": GPIO._beam_blocked})
-
-
-# -- Rules API -------------------------------------------------------------
+    beam = body.get("beam", "beam0"); blocked = body.get("blocked", False)
+    pin = PINS.get(beam)
+    if pin is not None: GPIO.sim_set_beam(pin, blocked)
+    return jsonify({"ok": True, "beam": beam, "blocked": blocked})
 
 @app.route("/api/rules", methods=["GET"])
-def get_rules():
-    return jsonify(load_rules())
+def get_rules(): return jsonify(load_rules())
 
 @app.route("/api/rules", methods=["POST"])
 def set_rules():
     rules = request.json
-    if not isinstance(rules, list):
-        return jsonify({"error": "Expected a JSON array"}), 400
-    save_rules(rules)
-    return jsonify({"ok": True, "count": len(rules)})
-
-
-# -- Scan log API ----------------------------------------------------------
+    if not isinstance(rules, list): return jsonify({"error": "Expected array"}), 400
+    save_rules(rules); return jsonify({"ok": True})
 
 @app.route("/api/scans", methods=["GET"])
 def get_scans():
-    with scan_log_lock:
-        return jsonify(list(scan_log))
+    with scan_log_lock: return jsonify(list(scan_log))
 
 @app.route("/api/scans/clear", methods=["POST"])
 def clear_scans():
-    with scan_log_lock:
-        scan_log.clear()
-    with current_card_lock:
-        current_card["card"] = None
+    with scan_log_lock: scan_log.clear()
+    with current_card_lock: current_card["card"] = None
     return jsonify({"ok": True})
 
 @app.route("/api/scans/export", methods=["GET"])
@@ -456,161 +453,66 @@ def export_scans():
     with scan_log_lock:
         lines = ["timestamp,name,edition,rarity,cmc,colors,color_identity,type_line,price,pile"]
         for s in scan_log:
-            colors = "|".join(s.get("colors", []))
-            ci = "|".join(s.get("color_identity", []))
-            lines.append(
-                f'{s["timestamp"]},'
-                f'"{s["name"]}",'
-                f'"{s.get("edition","")}",'
-                f'{s.get("rarity","")},'
-                f'{s.get("cmc",0)},'
-                f'{colors},'
-                f'{ci},'
-                f'"{s.get("type_line","")}",'
-                f'{s.get("price",0)},'
-                f'{s["pile"]}'
-            )
-    return "\n".join(lines), 200, {
-        "Content-Type": "text/csv",
-        "Content-Disposition": "attachment; filename=scans.csv"
-    }
-
-
-# -- Delver Webhook --------------------------------------------------------
-
-def add_cors(response):
-    response.headers["Access-Control-Allow-Origin"]  = "*"
-    response.headers["Access-Control-Allow-Methods"] = "POST, OPTIONS"
-    response.headers["Access-Control-Allow-Headers"] = "Content-Type"
-    return response
-
-@app.route("/webhook", methods=["POST", "OPTIONS"])
-def webhook():
-    if request.method == "OPTIONS":
-        return add_cors(jsonify({"message": "CORS preflight"})), 200
-
-    data = request.json or {}
-    event_type = data.get("type", "")
-
-    if event_type == "card_scanned":
-        cards = data.get("cards", [])
-        if not cards:
-            return add_cors(jsonify({"status": "no cards"})), 200
-
-        raw_card = cards[0]
-        enriched = enrich_card(raw_card)
-
-        rules = load_rules()
-        pile = evaluate_rules(enriched, rules)
-
-        entry = {**enriched, "timestamp": datetime.now().isoformat(), "pile": pile}
-
-        with scan_log_lock:
-            scan_log.append(entry)
-        with current_card_lock:
-            current_card["card"] = entry
-
-        print(f"[WEBHOOK] {entry['name']} | CMC {entry.get('cmc',0)} | "
-              f"Colors {entry.get('color_identity',[])} | {entry.get('type_line','')} → Pile {pile}")
-
-        return add_cors(jsonify({"status": "ok", "pile": pile, "card": entry["name"]})), 200
-
-    elif event_type == "scanner_started":
-        print("[WEBHOOK] Scanner started")
-    elif event_type == "scanner_paused":
-        print("[WEBHOOK] Scanner paused")
-
-    return add_cors(jsonify({"status": "ok"})), 200
-
-
-# -- Simulate a scan (for testing) -----------------------------------------
+            lines.append(f'{s["timestamp"]},"{s["name"]}","{s.get("edition","")}",{s.get("rarity","")},{s.get("cmc",0)},{"|".join(s.get("colors",[]))},{"|".join(s.get("color_identity",[]))},"{s.get("type_line","")}",{s.get("price",0)},{s["pile"]}')
+    return "\n".join(lines), 200, {"Content-Type": "text/csv", "Content-Disposition": "attachment; filename=scans.csv"}
 
 @app.route("/api/sim/scan", methods=["POST"])
 def sim_scan():
-    """Inject a fake card scan. Optionally provide a scryfallId for real enrichment."""
     body = request.json or {}
-
-    fake_delver_card = {
-        "name":        body.get("name", "Birds of Paradise"),
-        "edition":     body.get("edition", "Secret Lair Drop"),
-        "editionCode": body.get("editionCode", "sld"),
-        "number":      body.get("number", "92"),
-        "rarity":      body.get("rarity", "R"),
-        "price":       body.get("price", 8.36),
-        "fmtPrice":    body.get("fmtPrice", ""),
-        "finish":      body.get("finish", "regular"),
-        "cardType":    body.get("cardType", "Creature — Bird"),
-        "scryfallId":  body.get("scryfallId", ""),
-    }
-
-    enriched = enrich_card(fake_delver_card)
-    rules = load_rules()
-    pile = evaluate_rules(enriched, rules)
-
+    fake = {"name": body.get("name", "Birds of Paradise"), "edition": body.get("edition", ""),
+            "editionCode": body.get("editionCode", ""), "number": body.get("number", ""),
+            "rarity": body.get("rarity", "R"), "price": body.get("price", 8.36),
+            "fmtPrice": "", "finish": "regular", "cardType": body.get("cardType", ""),
+            "scryfallId": body.get("scryfallId", "")}
+    enriched = enrich_card(fake)
+    pile = evaluate_rules(enriched, load_rules())
     entry = {**enriched, "timestamp": datetime.now().isoformat(), "pile": pile}
-
-    with scan_log_lock:
-        scan_log.append(entry)
-    with current_card_lock:
-        current_card["card"] = entry
-
-    print(f"[SIM SCAN] {entry['name']} | CMC {entry.get('cmc',0)} | → Pile {pile}")
+    with scan_log_lock: scan_log.append(entry)
+    with current_card_lock: current_card["card"] = entry
+    print(f"[SIM SCAN] {entry['name']} → Pile {pile}")
     return jsonify({"ok": True, "card": entry})
-
-
-# -- Scryfall lookup (for UI search) ---------------------------------------
 
 @app.route("/api/scryfall/search", methods=["GET"])
 def scryfall_search():
-    """Search Scryfall by card name — used by the UI to find scryfallIds."""
     q = request.args.get("q", "")
-    if not q:
-        return jsonify({"error": "Missing ?q= parameter"}), 400
-
+    if not q: return jsonify({"error": "Missing ?q="}), 400
     try:
-        resp = http_requests.get(
-            "https://api.scryfall.com/cards/search",
+        resp = http_requests.get("https://api.scryfall.com/cards/search",
             params={"q": q, "unique": "prints", "order": "released", "dir": "desc"},
-            headers={"User-Agent": "CardSorterPi/1.0", "Accept": "application/json"},
-            timeout=5,
-        )
+            headers={"User-Agent": "CardSorterPi/1.0"}, timeout=5)
         if resp.status_code == 200:
-            data = resp.json()
             cards = []
-            for c in data.get("data", [])[:8]:
+            for c in resp.json().get("data", [])[:8]:
                 img = ""
-                if c.get("image_uris"):
-                    img = c["image_uris"].get("small", "")
+                if c.get("image_uris"): img = c["image_uris"].get("small", "")
                 elif c.get("card_faces") and c["card_faces"][0].get("image_uris"):
                     img = c["card_faces"][0]["image_uris"].get("small", "")
-                cards.append({
-                    "id":       c.get("id", ""),
-                    "name":     c.get("name", ""),
-                    "set_name": c.get("set_name", ""),
-                    "set":      c.get("set", ""),
-                    "number":   c.get("collector_number", ""),
-                    "rarity":   c.get("rarity", ""),
-                    "image":    img,
-                })
+                cards.append({"id": c.get("id",""), "name": c.get("name",""),
+                    "set_name": c.get("set_name",""), "set": c.get("set",""),
+                    "number": c.get("collector_number",""), "rarity": c.get("rarity",""), "image": img})
             return jsonify(cards)
-        elif resp.status_code == 404:
-            return jsonify([])
-        else:
-            return jsonify({"error": f"Scryfall returned {resp.status_code}"}), 502
-    except Exception as e:
-        return jsonify({"error": str(e)}), 500
+        elif resp.status_code == 404: return jsonify([])
+        else: return jsonify({"error": f"Scryfall {resp.status_code}"}), 502
+    except Exception as e: return jsonify({"error": str(e)}), 500
 
+@app.route("/debug")
+def debug_page():
+    info = {"simulated": SIMULATED, "pins": PINS, "python": sys.version,
+            "beams": {}, "scans": len(scan_log), "rules": len(load_rules())}
+    for n, p in PINS.items():
+        if "beam" in n: info["beams"][n] = "BLOCKED" if GPIO.input(p) == GPIO.LOW else "clear"
+    return f"<pre>{json.dumps(info, indent=2)}</pre>"
 
-# ---------------------------------------------------------------------------
 
 if __name__ == "__main__":
-    # On Pi: bind to all interfaces so phone/laptop can reach it
-    # On laptop (sim): bind to 127.0.0.1 to avoid VPN/firewall issues
     host = "0.0.0.0" if not SIMULATED else "127.0.0.1"
     port = 5000 if not SIMULATED else 8080
-
-    print("\n🃏 Card Sorter Control System")
-    print(f"   Mode: {'SIMULATION' if SIMULATED else 'RASPBERRY PI'}")
-    print(f"   Dashboard:  http://127.0.0.1:{port}")
-    print(f"   Webhook:    http://127.0.0.1:{port}/webhook\n")
+    print(f"\n🃏 Card Sorter Control System")
+    print(f"   Mode:      {'SIMULATION' if SIMULATED else 'RASPBERRY PI'}")
+    print(f"   Dashboard: http://{'<pi-ip>' if not SIMULATED else '127.0.0.1'}:{port}")
+    print(f"   Webhook:   POST to / or /webhook")
+    print(f"   Debug:     http://{'<pi-ip>' if not SIMULATED else '127.0.0.1'}:{port}/debug")
+    if not SIMULATED:
+        print(f"\n   ⚠️  Motor not working? Try: sudo python app.py")
+    print()
     app.run(host=host, port=port, debug=SIMULATED)
