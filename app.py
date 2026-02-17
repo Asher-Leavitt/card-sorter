@@ -273,29 +273,200 @@ class SequenceState:
     def __init__(self):
         self.lock = threading.Lock()
         self.running = False
-        self.current_step = 0
+        self.stop_requested = False
+        self.phase = "idle"       # idle, homing, oscillating, ejecting
         self.status_msg = "Idle"
         self.error = ""
-        self.steps_taken = 0
+        self.cycle_count = 0      # how many cards processed
+        self.osc_count = 0        # oscillation passes this cycle
+        self.last_scan_ts = ""    # timestamp of last scan we acted on
 
 seq = SequenceState()
 
-def sequence_step1_home():
+
+def _should_stop():
+    """Check if stop was requested."""
     with seq.lock:
-        seq.running = True; seq.current_step = 1
-        seq.status_msg = "Homing: stepper 1 CCW → beam 0"; seq.error = ""
-    print("[SEQ] Step 1: Homing stepper 1 CCW until beam 0...")
-    success, steps = run_until_beam(
-        PINS["stepper1_step"], PINS["stepper1_dir"], PINS["beam0"],
-        direction=-1, delay=0.001, max_steps=50000)
+        return seq.stop_requested
+
+
+def _set_phase(phase, msg):
+    """Update sequence phase and status message."""
     with seq.lock:
-        seq.steps_taken = steps; seq.running = False
-        if success:
-            seq.status_msg = f"Homed OK ({steps} steps)"; seq.error = ""
-        else:
-            seq.status_msg = "Home FAILED"
-            seq.error = f"Beam 0 never triggered after {steps} steps"
-    print(f"[SEQ] Step 1 {'OK' if success else 'FAILED'}: {steps} steps")
+        seq.phase = phase
+        seq.status_msg = msg
+    print(f"[SEQ] {msg}")
+
+
+def _run_until_beam_interruptible(step_pin, dir_pin, beam_pin, direction, delay=0.001, max_steps=50000):
+    """Like run_until_beam but checks for stop requests between steps."""
+    GPIO.output(dir_pin, GPIO.HIGH if direction == 1 else GPIO.LOW)
+    taken = 0
+    for _ in range(max_steps):
+        if _should_stop():
+            return "stopped", taken
+        if GPIO.input(beam_pin) == GPIO.LOW:
+            return "beam", taken
+        GPIO.output(step_pin, GPIO.HIGH)
+        time.sleep(delay)
+        GPIO.output(step_pin, GPIO.LOW)
+        time.sleep(delay)
+        taken += 1
+    return "max_steps", taken
+
+
+def _step_interruptible(step_pin, dir_pin, direction, steps, delay=0.001, check_scan=False):
+    """Step N times, checking for stop. If check_scan=True, also stop on new card scan."""
+    GPIO.output(dir_pin, GPIO.HIGH if direction == 1 else GPIO.LOW)
+    taken = 0
+    for _ in range(steps):
+        if _should_stop():
+            return "stopped", taken
+        if check_scan:
+            with current_card_lock:
+                card = current_card["card"]
+            if card and card.get("timestamp", "") != seq.last_scan_ts:
+                return "scanned", taken
+        GPIO.output(step_pin, GPIO.HIGH)
+        time.sleep(delay)
+        GPIO.output(step_pin, GPIO.LOW)
+        time.sleep(delay)
+        taken += 1
+    return "done", taken
+
+
+def continuous_sort_loop():
+    """
+    Main sorting loop:
+      1. Home: stepper 1 CCW until beam 0
+      2. Oscillate: 800 CW, then CCW back to beam 0, repeat until card scanned
+      3. Eject: 2000 steps CW
+      4. Repeat 1-3 until stopped
+    """
+    pin_step = PINS["stepper1_step"]
+    pin_dir  = PINS["stepper1_dir"]
+    pin_beam = PINS["beam0"]
+    delay    = 0.001
+
+    with seq.lock:
+        seq.running = True
+        seq.stop_requested = False
+        seq.cycle_count = 0
+        seq.error = ""
+        # Snapshot the current scan timestamp so we don't react to old scans
+        with current_card_lock:
+            card = current_card["card"]
+        seq.last_scan_ts = card["timestamp"] if card else ""
+
+    print("[SEQ] ═══ Continuous sort loop started ═══")
+
+    while not _should_stop():
+        cycle = seq.cycle_count + 1
+
+        # ── Phase 1: Home ──────────────────────────────────────────
+        _set_phase("homing", f"Cycle {cycle}: Homing CCW → beam 0")
+
+        result, steps = _run_until_beam_interruptible(
+            pin_step, pin_dir, pin_beam, direction=-1, delay=delay)
+
+        if result == "stopped":
+            break
+        if result == "max_steps":
+            with seq.lock:
+                seq.error = f"Cycle {cycle}: Beam 0 never hit during homing!"
+                seq.status_msg = "ERROR: Home failed"
+            print(f"[SEQ] ERROR: Homing failed after {steps} steps")
+            break
+
+        print(f"[SEQ] Cycle {cycle}: Homed after {steps} steps")
+
+        # ── Phase 2: Oscillate until scanned ───────────────────────
+        _set_phase("oscillating", f"Cycle {cycle}: Oscillating — waiting for scan")
+        with seq.lock:
+            seq.osc_count = 0
+
+        scanned = False
+        while not _should_stop() and not scanned:
+            with seq.lock:
+                seq.osc_count += 1
+                osc = seq.osc_count
+
+            # Forward 800 steps CW (check for scan during movement)
+            _set_phase("oscillating", f"Cycle {cycle}: Osc {osc} — forward 1000 CW")
+            result, _ = _step_interruptible(
+                pin_step, pin_dir, direction=1, steps=1000,
+                delay=delay, check_scan=True)
+
+            if result == "stopped":
+                break
+            if result == "scanned":
+                scanned = True
+                break
+
+            # Back to beam 0 CCW (check for scan during movement)
+            _set_phase("oscillating", f"Cycle {cycle}: Osc {osc} — returning to beam 0")
+            result, _ = _run_until_beam_interruptible(
+                pin_step, pin_dir, pin_beam, direction=-1, delay=delay)
+
+            if result == "stopped":
+                break
+            if result == "max_steps":
+                with seq.lock:
+                    seq.error = f"Cycle {cycle}: Lost beam 0 during oscillation!"
+                print(f"[SEQ] ERROR: Lost beam 0 during oscillation")
+                break
+
+            # Quick check for scan at home position too
+            with current_card_lock:
+                card = current_card["card"]
+            if card and card.get("timestamp", "") != seq.last_scan_ts:
+                scanned = True
+                break
+
+        if _should_stop():
+            break
+
+        if not scanned:
+            # Error occurred in oscillation
+            break
+
+        # Update the scan timestamp so we don't re-trigger on same card
+        with current_card_lock:
+            card = current_card["card"]
+        with seq.lock:
+            seq.last_scan_ts = card["timestamp"] if card else ""
+
+        card_name = card["name"] if card else "Unknown"
+        print(f"[SEQ] Cycle {cycle}: Card scanned! → {card_name}")
+
+        # ── Phase 3: Eject ─────────────────────────────────────────
+        _set_phase("ejecting", f"Cycle {cycle}: Ejecting — 2000 steps CW")
+
+        result, steps = _step_interruptible(
+            pin_step, pin_dir, direction=1, steps=2000, delay=delay)
+
+        if result == "stopped":
+            break
+
+        print(f"[SEQ] Cycle {cycle}: Ejected ({steps} steps)")
+
+        with seq.lock:
+            seq.cycle_count = cycle
+
+        # Small pause between cycles
+        time.sleep(0.1)
+
+    # ── Cleanup ────────────────────────────────────────────────────
+    with seq.lock:
+        seq.running = False
+        if seq.stop_requested:
+            seq.status_msg = f"Stopped after {seq.cycle_count} cards"
+            seq.phase = "idle"
+        elif not seq.error:
+            seq.status_msg = f"Complete: {seq.cycle_count} cards sorted"
+            seq.phase = "idle"
+
+    print(f"[SEQ] ═══ Loop ended: {seq.cycle_count} cards processed ═══")
 
 
 # ---------------------------------------------------------------------------
@@ -362,8 +533,9 @@ def api_status():
         if "beam" in name:
             beams[name] = GPIO.input(pin) == GPIO.LOW
     with seq.lock:
-        sd = {"seq_running": seq.running, "seq_step": seq.current_step,
-              "seq_status": seq.status_msg, "seq_error": seq.error, "seq_steps": seq.steps_taken}
+        sd = {"seq_running": seq.running, "seq_phase": seq.phase,
+              "seq_status": seq.status_msg, "seq_error": seq.error,
+              "seq_cycles": seq.cycle_count, "seq_osc": seq.osc_count}
     with scan_log_lock: total = len(scan_log)
     with current_card_lock: card = current_card["card"]
     return jsonify({"simulated": SIMULATED, "beams": beams,
@@ -398,26 +570,19 @@ def motor_run_until_beam_api():
         print(f"[MOTOR] ERROR: {e}"); traceback.print_exc()
         return jsonify({"ok": False, "error": str(e)}), 500
 
-@app.route("/api/seq/step1", methods=["POST"])
-def seq_step1():
+@app.route("/api/seq/start", methods=["POST"])
+def seq_start():
     with seq.lock:
         if seq.running:
             return jsonify({"ok": False, "error": "Already running"}), 409
-    threading.Thread(target=sequence_step1_home, daemon=True).start()
-    return jsonify({"ok": True, "step": 1})
-
-@app.route("/api/seq/step2", methods=["POST"])
-def seq_step2():
-    return jsonify({"ok": False, "step": 2, "msg": "Not implemented yet"}), 501
-
-@app.route("/api/seq/step3", methods=["POST"])
-def seq_step3():
-    return jsonify({"ok": False, "step": 3, "msg": "Not implemented yet"}), 501
+    threading.Thread(target=continuous_sort_loop, daemon=True).start()
+    return jsonify({"ok": True, "msg": "Continuous sort loop started"})
 
 @app.route("/api/seq/stop", methods=["POST"])
 def seq_stop():
-    with seq.lock: seq.running = False; seq.status_msg = "Stopped"
-    return jsonify({"ok": True})
+    with seq.lock:
+        seq.stop_requested = True
+    return jsonify({"ok": True, "msg": "Stop requested"})
 
 @app.route("/api/sim/beam", methods=["POST"])
 def sim_beam():

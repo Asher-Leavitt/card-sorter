@@ -156,37 +156,56 @@ input[type=range]::-webkit-slider-thumb{-webkit-appearance:none;width:14px;heigh
     {% endif %}
   </div>
 
-  <!-- ═══ Sequence Control ═══ -->
+  <!-- ═══ Sorting Sequence ═══ -->
   <div class="pan">
     <div class="ph"><span class="pip" style="background:var(--g)"></span> Sorting Sequence</div>
     <div class="inds" id="beamInds"></div>
 
-    <div class="seq-step" id="ss1">
-      <div class="seq-num">Step 1 — Home</div>
-      <div class="seq-desc">Run stepper 1 CCW until beam break 0 is hit</div>
-      <div class="br">
-        <button class="btn sm g" onclick="seqStep(1)">▶ Run Step 1</button>
-        <button class="btn sm r" onclick="seqStop()">■ Stop</button>
+    <div style="background:var(--sf2);border:1px solid var(--brd);border-radius:8px;padding:14px;margin-bottom:10px">
+      <div style="font-size:12px;color:var(--tx);margin-bottom:10px">
+        <strong style="color:var(--wh)">Continuous Loop:</strong><br>
+        1. Home → beam 0 (CCW)<br>
+        2. Oscillate 800 CW ↔ beam 0 until scanned<br>
+        3. Eject 2000 steps CW<br>
+        4. Repeat
       </div>
-      <div class="seq-status" id="ss1status"></div>
+      <div class="br">
+        <button class="btn g" id="btnStart" onclick="seqStart()">▶ Start Sorting</button>
+        <button class="btn r" id="btnStop" onclick="seqStop()" disabled>■ Stop</button>
+      </div>
     </div>
 
-    <div class="seq-step disabled" id="ss2">
-      <div class="seq-num">Step 2 — Scan Position</div>
-      <div class="seq-desc">Oscillate stepper 1 CW/CCW between beam 0 and 1 until Delver scans</div>
-      <div class="br">
-        <button class="btn sm" onclick="seqStep(2)" disabled>▶ Run Step 2</button>
+    <!-- Live status -->
+    <div style="background:var(--bg);border:1px solid var(--brd);border-radius:6px;padding:10px;font-family:var(--mono);font-size:12px">
+      <div style="display:flex;justify-content:space-between;margin-bottom:6px">
+        <span style="color:var(--txd)">Phase</span>
+        <span id="seqPhase" style="color:var(--wh)">idle</span>
       </div>
-      <div class="seq-status" id="ss2status"></div>
+      <div style="display:flex;justify-content:space-between;margin-bottom:6px">
+        <span style="color:var(--txd)">Status</span>
+        <span id="seqMsg" style="color:var(--g)">Idle</span>
+      </div>
+      <div style="display:flex;justify-content:space-between;margin-bottom:6px">
+        <span style="color:var(--txd)">Cards Sorted</span>
+        <span id="seqCycles" style="color:var(--wh);font-weight:700;font-size:16px">0</span>
+      </div>
+      <div style="display:flex;justify-content:space-between">
+        <span style="color:var(--txd)">Oscillations</span>
+        <span id="seqOsc" style="color:var(--wh)">0</span>
+      </div>
+      <div id="seqError" style="display:none;margin-top:8px;padding:6px 8px;background:var(--rbg);border:1px solid var(--r);border-radius:4px;color:var(--r);font-size:11px"></div>
     </div>
 
-    <div class="seq-step disabled" id="ss3">
-      <div class="seq-num">Step 3 — Sort to Pile</div>
-      <div class="seq-desc">Run stepper 1 CW + stepper 2 CW until target pile beam triggers</div>
-      <div class="br">
-        <button class="btn sm" onclick="seqStep(3)" disabled>▶ Run Step 3</button>
-      </div>
-      <div class="seq-status" id="ss3status"></div>
+    <!-- Phase indicator bar -->
+    <div style="display:flex;gap:2px;margin-top:10px">
+      <div class="phase-bar" id="pb-homing" style="flex:1;height:6px;border-radius:3px;background:var(--sf3);transition:background .2s"></div>
+      <div class="phase-bar" id="pb-oscillating" style="flex:2;height:6px;border-radius:3px;background:var(--sf3);transition:background .2s"></div>
+      <div class="phase-bar" id="pb-ejecting" style="flex:1;height:6px;border-radius:3px;background:var(--sf3);transition:background .2s"></div>
+    </div>
+    <div style="display:flex;gap:2px;margin-top:2px;font-family:var(--mono);font-size:9px;color:var(--txd)">
+      <span style="flex:1">HOME</span>
+      <span style="flex:2">SCAN</span>
+      <span style="flex:1">EJECT</span>
     </div>
   </div>
 
@@ -277,12 +296,9 @@ function manualRunBeam(dir,beam){
 }
 
 // Sequence
-function seqStep(n){
-  api(`/api/seq/step${n}`,{method:'POST'}).then(d=>{
-    const el=document.getElementById(`ss${n}status`);
-    el.classList.add('show');
-    el.textContent=d.ok?'Started...':d.msg||d.error||'Failed';
-    el.style.color=d.ok?'var(--g)':'var(--r)';
+function seqStart(){
+  api('/api/seq/start',{method:'POST'}).then(d=>{
+    if(!d.ok)alert(d.error||'Failed to start');
   });
 }
 function seqStop(){api('/api/seq/stop',{method:'POST'})}
@@ -385,12 +401,24 @@ function poll(){
     }
 
     // Sequence status
-    if(d.seq_status){
-      const s1=document.getElementById('ss1status');
-      s1.classList.add('show');
-      s1.textContent=d.seq_status;
-      s1.style.color=d.seq_error?'var(--r)':'var(--g)';
-    }
+    const running = d.seq_running;
+    document.getElementById('btnStart').disabled = running;
+    document.getElementById('btnStop').disabled = !running;
+    document.getElementById('seqPhase').textContent = d.seq_phase || 'idle';
+    document.getElementById('seqMsg').textContent = d.seq_status || 'Idle';
+    document.getElementById('seqMsg').style.color = d.seq_error ? 'var(--r)' : running ? 'var(--g)' : 'var(--txd)';
+    document.getElementById('seqCycles').textContent = d.seq_cycles || 0;
+    document.getElementById('seqOsc').textContent = d.seq_osc || 0;
+
+    const errEl = document.getElementById('seqError');
+    if (d.seq_error) { errEl.style.display='block'; errEl.textContent=d.seq_error; }
+    else { errEl.style.display='none'; }
+
+    // Phase bars
+    ['homing','oscillating','ejecting'].forEach(p => {
+      const el = document.getElementById('pb-'+p);
+      el.style.background = d.seq_phase===p ? 'var(--g)' : 'var(--sf3)';
+    });
 
     // Card
     if(d.current_card&&d.current_card.timestamp!==lastTs){
