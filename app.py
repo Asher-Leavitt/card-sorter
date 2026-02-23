@@ -63,10 +63,10 @@ except ImportError:
 PINS = {
     "stepper1_step": 5,
     "stepper1_dir":  6,
-    "stepper2_step": 24,
-    "stepper2_dir":  25,
+    "stepper2_step": 27,
+    "stepper2_dir":  22,
     "beam0":         4,   # home position
-    "beam1":         27,   # scan position
+    "beam1":         17,  # scan position (moved — GPIO 27 now used by stepper 2)
 }
 
 GPIO.setmode(GPIO.BCM)
@@ -117,6 +117,24 @@ def run_until_beam(step_pin, dir_pin, beam_pin, direction, delay=0.001, max_step
         taken += 1
     print(f"[STEPPER] Max steps ({max_steps}) reached without beam trigger!")
     return False, taken
+
+
+def step_dual(step1_pin, dir1_pin, dir1, step2_pin, dir2_pin, dir2, steps=1, delay=0.001):
+    """Step two motors simultaneously by interleaving their pulses."""
+    GPIO.output(dir1_pin, GPIO.HIGH if dir1 == 1 else GPIO.LOW)
+    GPIO.output(dir2_pin, GPIO.HIGH if dir2 == 1 else GPIO.LOW)
+    taken = 0
+    for _ in range(steps):
+        # Raise both STEP pins together
+        GPIO.output(step1_pin, GPIO.HIGH)
+        GPIO.output(step2_pin, GPIO.HIGH)
+        time.sleep(delay)
+        # Lower both STEP pins together
+        GPIO.output(step1_pin, GPIO.LOW)
+        GPIO.output(step2_pin, GPIO.LOW)
+        time.sleep(delay)
+        taken += 1
+    return taken
 
 
 # ---------------------------------------------------------------------------
@@ -335,16 +353,36 @@ def _step_interruptible(step_pin, dir_pin, direction, steps, delay=0.001, check_
     return "done", taken
 
 
+def _dual_step_interruptible(s1_step, s1_dir, s1_direction, s2_step, s2_dir, s2_direction, steps, delay=0.001):
+    """Step two motors simultaneously, checking for stop between steps."""
+    GPIO.output(s1_dir, GPIO.HIGH if s1_direction == 1 else GPIO.LOW)
+    GPIO.output(s2_dir, GPIO.HIGH if s2_direction == 1 else GPIO.LOW)
+    taken = 0
+    for _ in range(steps):
+        if _should_stop():
+            return "stopped", taken
+        GPIO.output(s1_step, GPIO.HIGH)
+        GPIO.output(s2_step, GPIO.HIGH)
+        time.sleep(delay)
+        GPIO.output(s1_step, GPIO.LOW)
+        GPIO.output(s2_step, GPIO.LOW)
+        time.sleep(delay)
+        taken += 1
+    return "done", taken
+
+
 def continuous_sort_loop():
     """
     Main sorting loop:
       1. Home: stepper 1 CCW until beam 0
       2. Oscillate: 800 CW, then CCW back to beam 0, repeat until card scanned
-      3. Eject: 2000 steps CW
+      3. Eject: stepper 1 CW + stepper 2 CCW, 2000 steps (conveyor handoff)
       4. Repeat 1-3 until stopped
     """
-    pin_step = PINS["stepper1_step"]
-    pin_dir  = PINS["stepper1_dir"]
+    s1_step = PINS["stepper1_step"]
+    s1_dir  = PINS["stepper1_dir"]
+    s2_step = PINS["stepper2_step"]
+    s2_dir  = PINS["stepper2_dir"]
     pin_beam = PINS["beam0"]
     delay    = 0.001
 
@@ -367,7 +405,7 @@ def continuous_sort_loop():
         _set_phase("homing", f"Cycle {cycle}: Homing CCW → beam 0")
 
         result, steps = _run_until_beam_interruptible(
-            pin_step, pin_dir, pin_beam, direction=-1, delay=delay)
+            s1_step, s1_dir, pin_beam, direction=-1, delay=delay)
 
         if result == "stopped":
             break
@@ -385,28 +423,50 @@ def continuous_sort_loop():
         with seq.lock:
             seq.osc_count = 0
 
+        # Snapshot scan timestamp NOW so we ignore any scans from
+        # homing or previous ejection — only react to NEW scans
+        with current_card_lock:
+            card = current_card["card"]
+        with seq.lock:
+            seq.last_scan_ts = card["timestamp"] if card else ""
+
         scanned = False
         while not _should_stop() and not scanned:
             with seq.lock:
                 seq.osc_count += 1
                 osc = seq.osc_count
 
-            # Forward 800 steps CW (check for scan during movement)
-            _set_phase("oscillating", f"Cycle {cycle}: Osc {osc} — forward 1000 CW")
+            # Forward 800 steps CW (NO scan check during movement)
+            _set_phase("oscillating", f"Cycle {cycle}: Osc {osc} — forward 800 CW")
             result, _ = _step_interruptible(
-                pin_step, pin_dir, direction=1, steps=1000,
-                delay=delay, check_scan=True)
+                s1_step, s1_dir, direction=1, steps=800,
+                delay=delay, check_scan=False)
 
             if result == "stopped":
                 break
-            if result == "scanned":
-                scanned = True
+
+            # ── PAUSE at scan position — check for scan here ──
+            _set_phase("oscillating", f"Cycle {cycle}: Osc {osc} — waiting for scan...")
+            pause_start = time.time()
+            pause_duration = 1.0  # seconds to wait at scan position
+
+            while time.time() - pause_start < pause_duration:
+                if _should_stop():
+                    break
+                with current_card_lock:
+                    card = current_card["card"]
+                if card and card.get("timestamp", "") != seq.last_scan_ts:
+                    scanned = True
+                    break
+                time.sleep(0.05)  # check 20x/sec during pause
+
+            if _should_stop() or scanned:
                 break
 
-            # Back to beam 0 CCW (check for scan during movement)
+            # Back to beam 0 CCW (NO scan check during return)
             _set_phase("oscillating", f"Cycle {cycle}: Osc {osc} — returning to beam 0")
             result, _ = _run_until_beam_interruptible(
-                pin_step, pin_dir, pin_beam, direction=-1, delay=delay)
+                s1_step, s1_dir, pin_beam, direction=-1, delay=delay)
 
             if result == "stopped":
                 break
@@ -414,13 +474,6 @@ def continuous_sort_loop():
                 with seq.lock:
                     seq.error = f"Cycle {cycle}: Lost beam 0 during oscillation!"
                 print(f"[SEQ] ERROR: Lost beam 0 during oscillation")
-                break
-
-            # Quick check for scan at home position too
-            with current_card_lock:
-                card = current_card["card"]
-            if card and card.get("timestamp", "") != seq.last_scan_ts:
-                scanned = True
                 break
 
         if _should_stop():
@@ -439,11 +492,14 @@ def continuous_sort_loop():
         card_name = card["name"] if card else "Unknown"
         print(f"[SEQ] Cycle {cycle}: Card scanned! → {card_name}")
 
-        # ── Phase 3: Eject ─────────────────────────────────────────
-        _set_phase("ejecting", f"Cycle {cycle}: Ejecting — 2000 steps CW")
+        # ── Phase 3: Eject — both steppers ─────────────────────────
+        # Stepper 1 CW pushes card forward, stepper 2 CCW receives it
+        _set_phase("ejecting", f"Cycle {cycle}: Ejecting — S1 CW + S2 CCW, 2000 steps")
 
-        result, steps = _step_interruptible(
-            pin_step, pin_dir, direction=1, steps=2000, delay=delay)
+        result, steps = _dual_step_interruptible(
+            s1_step, s1_dir, 1,     # stepper 1: CW
+            s2_step, s2_dir, -1,    # stepper 2: CCW (opposite)
+            steps=8000, delay=delay)
 
         if result == "stopped":
             break
@@ -566,6 +622,24 @@ def motor_run_until_beam_api():
     try:
         success, taken = run_until_beam(pstep, pdir, pbeam, direction, delay)
         return jsonify({"ok": True, "success": success, "steps_taken": taken})
+    except Exception as e:
+        print(f"[MOTOR] ERROR: {e}"); traceback.print_exc()
+        return jsonify({"ok": False, "error": str(e)}), 500
+
+@app.route("/api/motor/dual", methods=["POST"])
+def motor_dual_api():
+    """Step both motors simultaneously. S1 and S2 can have independent directions.
+    {s1_dir: 1|-1, s2_dir: 1|-1, steps: N, delay: float}"""
+    body = request.json or {}
+    s1_d = body.get("s1_dir", 1); s2_d = body.get("s2_dir", -1)
+    steps = body.get("steps", 200); delay = body.get("delay", 0.001)
+    print(f"[MOTOR] Dual: S1 dir={s1_d}, S2 dir={s2_d}, {steps} steps")
+    try:
+        taken = step_dual(
+            PINS["stepper1_step"], PINS["stepper1_dir"], s1_d,
+            PINS["stepper2_step"], PINS["stepper2_dir"], s2_d,
+            steps, delay)
+        return jsonify({"ok": True, "steps_taken": taken})
     except Exception as e:
         print(f"[MOTOR] ERROR: {e}"); traceback.print_exc()
         return jsonify({"ok": False, "error": str(e)}), 500

@@ -212,16 +212,9 @@ input[type=range]::-webkit-slider-thumb{-webkit-appearance:none;width:14px;heigh
   <!-- ═══ Manual Motor Control ═══ -->
   <div class="pan">
     <div class="ph"><span class="pip" style="background:var(--bl)"></span> Manual Motor</div>
-    <p style="font-size:12px;color:var(--txd);margin-bottom:10px">Direct stepper control for testing</p>
 
+    <!-- Shared settings -->
     <div class="srow" style="margin-top:0">
-      <label>Stepper</label>
-      <select id="mStepper" style="background:var(--bg);color:var(--tx);border:1px solid var(--brd);border-radius:4px;padding:4px 8px;font-family:var(--mono);font-size:12px">
-        <option value="1">Stepper 1</option>
-        <option value="2">Stepper 2</option>
-      </select>
-    </div>
-    <div class="srow">
       <label>Steps</label>
       <input type="range" id="mSteps" min="10" max="2000" value="200" step="10" oninput="document.getElementById('mStepsV').textContent=this.value">
       <span class="sv" id="mStepsV">200</span>
@@ -231,11 +224,35 @@ input[type=range]::-webkit-slider-thumb{-webkit-appearance:none;width:14px;heigh
       <input type="range" id="mDelay" min="3" max="100" value="10" oninput="document.getElementById('mDelayV').textContent=(this.value/10000*1000).toFixed(1)+'ms'">
       <span class="sv" id="mDelayV">1.0ms</span>
     </div>
-    <div class="br" style="margin-top:12px">
-      <button class="btn g" onclick="manualStep(1)">▶ CW</button>
-      <button class="btn b" onclick="manualStep(-1)">◀ CCW</button>
-      <button class="btn" onclick="manualRunBeam(-1,'beam0')">⏎ Home (→beam0)</button>
+
+    <!-- Stepper 1 -->
+    <div style="margin-top:12px;padding:10px;background:var(--sf2);border:1px solid var(--brd);border-radius:6px">
+      <div style="font-family:var(--mono);font-size:10px;font-weight:600;color:var(--txd);letter-spacing:.08em;margin-bottom:6px">STEPPER 1 <span style="color:var(--g)">● GPIO 5/6</span></div>
+      <div class="br">
+        <button class="btn sm g" onclick="manualStep(1,1)">▶ CW</button>
+        <button class="btn sm b" onclick="manualStep(1,-1)">◀ CCW</button>
+        <button class="btn sm" onclick="manualRunBeam(1,-1,'beam0')">⏎ Home</button>
+      </div>
     </div>
+
+    <!-- Stepper 2 -->
+    <div style="margin-top:6px;padding:10px;background:var(--sf2);border:1px solid var(--brd);border-radius:6px">
+      <div style="font-family:var(--mono);font-size:10px;font-weight:600;color:var(--txd);letter-spacing:.08em;margin-bottom:6px">STEPPER 2 <span style="color:var(--bl)">● GPIO 27/22</span></div>
+      <div class="br">
+        <button class="btn sm g" onclick="manualStep(2,1)">▶ CW</button>
+        <button class="btn sm b" onclick="manualStep(2,-1)">◀ CCW</button>
+      </div>
+    </div>
+
+    <!-- Dual step -->
+    <div style="margin-top:6px;padding:10px;background:var(--sf2);border:1px solid var(--brd);border-radius:6px">
+      <div style="font-family:var(--mono);font-size:10px;font-weight:600;color:var(--txd);letter-spacing:.08em;margin-bottom:6px">BOTH <span style="color:var(--pp)">● Simultaneous</span></div>
+      <div class="br">
+        <button class="btn sm g" onclick="manualDual(1,-1)">S1 CW + S2 CCW</button>
+        <button class="btn sm b" onclick="manualDual(-1,1)">S1 CCW + S2 CW</button>
+      </div>
+    </div>
+
     <div style="font-family:var(--mono);font-size:11px;color:var(--txd);margin-top:8px" id="motorResult"></div>
 
     {% if simulated %}
@@ -277,21 +294,27 @@ input[type=range]::-webkit-slider-thumb{-webkit-appearance:none;width:14px;heigh
 const api=(u,o={})=>fetch(u,{headers:{'Content-Type':'application/json'},...o,body:o.body?JSON.stringify(o.body):undefined}).then(r=>r.json());
 
 // Motor
-function manualStep(dir){
-  const s=document.getElementById('mStepper').value;
+function manualStep(stepper,dir){
   const steps=parseInt(document.getElementById('mSteps').value);
   const delay=parseInt(document.getElementById('mDelay').value)/10000;
-  document.getElementById('motorResult').textContent='Running...';
-  api('/api/motor/step',{method:'POST',body:{stepper:parseInt(s),direction:dir,steps,delay}})
-    .then(d=>{document.getElementById('motorResult').textContent=d.ok?`Done: ${d.steps_taken} steps`:`Error: ${d.error}`})
+  document.getElementById('motorResult').textContent=`S${stepper} running...`;
+  api('/api/motor/step',{method:'POST',body:{stepper,direction:dir,steps,delay}})
+    .then(d=>{document.getElementById('motorResult').textContent=d.ok?`S${stepper}: ${d.steps_taken} steps done`:`Error: ${d.error}`})
     .catch(e=>{document.getElementById('motorResult').textContent='Request failed'});
 }
-function manualRunBeam(dir,beam){
-  const s=document.getElementById('mStepper').value;
+function manualRunBeam(stepper,dir,beam){
   const delay=parseInt(document.getElementById('mDelay').value)/10000;
-  document.getElementById('motorResult').textContent='Running until beam...';
-  api('/api/motor/run_until_beam',{method:'POST',body:{stepper:parseInt(s),direction:dir,beam,delay}})
-    .then(d=>{document.getElementById('motorResult').textContent=d.ok?(d.success?`Beam hit after ${d.steps_taken} steps`:`Beam NOT hit (${d.steps_taken} steps)`):`Error: ${d.error}`})
+  document.getElementById('motorResult').textContent=`S${stepper} → ${beam}...`;
+  api('/api/motor/run_until_beam',{method:'POST',body:{stepper,direction:dir,beam,delay}})
+    .then(d=>{document.getElementById('motorResult').textContent=d.ok?(d.success?`S${stepper}: beam hit after ${d.steps_taken}`:`S${stepper}: beam NOT hit (${d.steps_taken})`):`Error: ${d.error}`})
+    .catch(e=>{document.getElementById('motorResult').textContent='Request failed'});
+}
+function manualDual(s1d,s2d){
+  const steps=parseInt(document.getElementById('mSteps').value);
+  const delay=parseInt(document.getElementById('mDelay').value)/10000;
+  document.getElementById('motorResult').textContent='Both running...';
+  api('/api/motor/dual',{method:'POST',body:{s1_dir:s1d,s2_dir:s2d,steps,delay}})
+    .then(d=>{document.getElementById('motorResult').textContent=d.ok?`Both: ${d.steps_taken} steps done`:`Error: ${d.error}`})
     .catch(e=>{document.getElementById('motorResult').textContent='Request failed'});
 }
 
