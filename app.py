@@ -61,12 +61,12 @@ except ImportError:
 # ---------------------------------------------------------------------------
 
 PINS = {
-    "stepper1_step": 5,
-    "stepper1_dir":  6,
-    "stepper2_step": 27,
-    "stepper2_dir":  22,
+    "stepper1_step": 22,
+    "stepper1_dir":  23,
+    "stepper2_step": 17,
+    "stepper2_dir":  27,
     "beam0":         4,   # home position
-    "beam1":         17,  # scan position (moved — GPIO 27 now used by stepper 2)
+    "beam1":         26,  # exit — card passes through here after eject
 }
 
 GPIO.setmode(GPIO.BCM)
@@ -371,19 +371,57 @@ def _dual_step_interruptible(s1_step, s1_dir, s1_direction, s2_step, s2_dir, s2_
     return "done", taken
 
 
+def _dual_step_until_beam_passthrough(s1_step, s1_dir, s1_direction,
+                                       s2_step, s2_dir, s2_direction,
+                                       beam_pin, delay=0.001, max_steps=50000):
+    """
+    Run both steppers until a card fully passes through a beam break sensor.
+    Sequence: wait for beam BLOCKED, then wait for beam CLEARED.
+    Returns (result, steps_taken) where result is 'passthrough', 'stopped', or 'max_steps'.
+    """
+    GPIO.output(s1_dir, GPIO.HIGH if s1_direction == 1 else GPIO.LOW)
+    GPIO.output(s2_dir, GPIO.HIGH if s2_direction == 1 else GPIO.LOW)
+    taken = 0
+    phase = "waiting_block"  # -> "waiting_clear" -> done
+
+    for _ in range(max_steps):
+        if _should_stop():
+            return "stopped", taken
+
+        beam_blocked = GPIO.input(beam_pin) == GPIO.LOW
+
+        if phase == "waiting_block" and beam_blocked:
+            phase = "waiting_clear"
+            print(f"[EJECT] Beam blocked at step {taken} — waiting for card to clear")
+        elif phase == "waiting_clear" and not beam_blocked:
+            print(f"[EJECT] Beam cleared at step {taken} — card passed through")
+            return "passthrough", taken
+
+        GPIO.output(s1_step, GPIO.HIGH)
+        GPIO.output(s2_step, GPIO.HIGH)
+        time.sleep(delay)
+        GPIO.output(s1_step, GPIO.LOW)
+        GPIO.output(s2_step, GPIO.LOW)
+        time.sleep(delay)
+        taken += 1
+
+    return "max_steps", taken
+
+
 def continuous_sort_loop():
     """
     Main sorting loop:
       1. Home: stepper 1 CCW until beam 0
       2. Oscillate: 800 CW, then CCW back to beam 0, repeat until card scanned
-      3. Eject: stepper 1 CW + stepper 2 CCW, 2000 steps (conveyor handoff)
+      3. Eject: S1 CW + S2 CCW until card passes beam 1 (blocked → cleared)
       4. Repeat 1-3 until stopped
     """
     s1_step = PINS["stepper1_step"]
     s1_dir  = PINS["stepper1_dir"]
     s2_step = PINS["stepper2_step"]
     s2_dir  = PINS["stepper2_dir"]
-    pin_beam = PINS["beam0"]
+    pin_beam0 = PINS["beam0"]
+    pin_beam1 = PINS["beam1"]
     delay    = 0.001
 
     with seq.lock:
@@ -405,7 +443,7 @@ def continuous_sort_loop():
         _set_phase("homing", f"Cycle {cycle}: Homing CCW → beam 0")
 
         result, steps = _run_until_beam_interruptible(
-            s1_step, s1_dir, pin_beam, direction=-1, delay=delay)
+            s1_step, s1_dir, pin_beam0, direction=-1, delay=delay)
 
         if result == "stopped":
             break
@@ -466,7 +504,7 @@ def continuous_sort_loop():
             # Back to beam 0 CCW (NO scan check during return)
             _set_phase("oscillating", f"Cycle {cycle}: Osc {osc} — returning to beam 0")
             result, _ = _run_until_beam_interruptible(
-                s1_step, s1_dir, pin_beam, direction=-1, delay=delay)
+                s1_step, s1_dir, pin_beam0, direction=-1, delay=delay)
 
             if result == "stopped":
                 break
@@ -492,19 +530,24 @@ def continuous_sort_loop():
         card_name = card["name"] if card else "Unknown"
         print(f"[SEQ] Cycle {cycle}: Card scanned! → {card_name}")
 
-        # ── Phase 3: Eject — both steppers ─────────────────────────
-        # Stepper 1 CW pushes card forward, stepper 2 CCW receives it
-        _set_phase("ejecting", f"Cycle {cycle}: Ejecting — S1 CW + S2 CCW, 2000 steps")
+        # ── Phase 3: Eject — both steppers until card passes beam 1 ──
+        # Run S1 CW + S2 CCW until beam1 is blocked then cleared
+        _set_phase("ejecting", f"Cycle {cycle}: Ejecting — S1 CW + S2 CCW → beam 1 passthrough")
 
-        result, steps = _dual_step_interruptible(
+        result, steps = _dual_step_until_beam_passthrough(
             s1_step, s1_dir, 1,     # stepper 1: CW
             s2_step, s2_dir, -1,    # stepper 2: CCW (opposite)
-            steps=8000, delay=delay)
+            beam_pin=pin_beam1, delay=delay, max_steps=50000)
 
         if result == "stopped":
             break
+        if result == "max_steps":
+            with seq.lock:
+                seq.error = f"Cycle {cycle}: Card never passed beam 1 during eject!"
+            print(f"[SEQ] ERROR: beam 1 passthrough never completed after {steps} steps")
+            break
 
-        print(f"[SEQ] Cycle {cycle}: Ejected ({steps} steps)")
+        print(f"[SEQ] Cycle {cycle}: Ejected — card passed beam 1 after {steps} steps")
 
         with seq.lock:
             seq.cycle_count = cycle
