@@ -1,7 +1,89 @@
-[
-  {"name": "High Value",  "field": "price",          "operator": ">",        "value": 5,          "pile": 1},
-  {"name": "Mythics",     "field": "rarity",         "operator": "==",       "value": "mythic",   "pile": 2},
-  {"name": "Rares",       "field": "rarity",         "operator": "==",       "value": "rare",     "pile": 3},
-  {"name": "Blue Cards",  "field": "color_identity", "operator": "contains", "value": "U",        "pile": 4},
-  {"name": "Creatures",   "field": "type_line",      "operator": "contains", "value": "Creature", "pile": 5}
-]
+{
+  "1": {
+    "colors": {
+      "mode": "including",
+      "selected": [
+        "G"
+      ]
+    },
+    "formats": [],
+    "languages": [],
+    "layouts": [],
+    "price": {
+      "currency": "usd",
+      "operator": ">",
+      "value": ""
+    },
+    "rarity": [
+      "common",
+      "uncommon"
+    ],
+    "sets": [
+      {
+        "value": "BLB"
+      }
+    ],
+    "stats": [
+      {
+        "stat": "cmc",
+        "operator": ">",
+        "value": 1
+      }
+    ],
+    "types": {
+      "entries": [
+        {
+          "is": true,
+          "name": "Creature"
+        },
+        {
+          "name": "Enchantment",
+          "is": true
+        }
+      ],
+      "partial": true
+    }
+  },
+  "2": {
+    "colors": {
+      "mode": "including",
+      "selected": []
+    },
+    "formats": [],
+    "languages": [],
+    "layouts": [],
+    "price": {
+      "currency": "usd",
+      "operator": ">",
+      "value": ""
+    },
+    "rarity": [],
+    "sets": [],
+    "stats": [],
+    "types": {
+      "entries": [],
+      "partial": false
+    }
+  },
+  "3": {
+    "price": {
+      "currency": "usd",
+      "operator": ">",
+      "value": ""
+    },
+    "colors": {
+      "selected": [],
+      "mode": "including"
+    },
+    "types": {
+      "entries": [],
+      "partial": false
+    },
+    "rarity": [],
+    "stats": [],
+    "formats": [],
+    "sets": [],
+    "languages": [],
+    "layouts": []
+  }
+}

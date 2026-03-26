@@ -1,0 +1,21 @@
+{
+  "error_pile": 0,
+  "piles": {
+    "1": {
+      "beam": "beam1",
+      "dummy": false,
+      "servo_ch": 15,
+      "servo_down": 40,
+      "servo_up": 21
+    }
+  },
+  "sort_config": {
+    "eject_extra_steps": 100,
+    "home_timeout_sec": 20,
+    "osc_forward_steps": 800,
+    "osc_pause_sec": 1,
+    "pile1_shuffle_steps": 300,
+    "scan_timeout_osc": 60,
+    "step_delay": 0.001
+  }
+}
