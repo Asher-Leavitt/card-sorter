@@ -136,7 +136,7 @@ input[type=range]::-webkit-slider-thumb{-webkit-appearance:none;width:12px;heigh
   </div>
   <div style="display:flex;gap:1px;margin-top:5px">
     <div id="pb-homing" style="flex:1;height:4px;border-radius:2px;background:var(--sf3)"></div>
-    <div id="pb-oscillating" style="flex:2;height:4px;border-radius:2px;background:var(--sf3)"></div>
+    <div id="pb-scanning" style="flex:2;height:4px;border-radius:2px;background:var(--sf3)"></div>
     <div id="pb-ejecting" style="flex:1;height:4px;border-radius:2px;background:var(--sf3)"></div>
     <div id="pb-error_eject" style="flex:1;height:4px;border-radius:2px;background:var(--sf3)"></div>
   </div>
@@ -471,7 +471,7 @@ function renderHW(d){
   const ss=new Set();for(const k of Object.keys(pins)){const m=k.match(/stepper(\d+)_/);if(m)ss.add(m[1])}
   document.getElementById('stepperBoxes').innerHTML=[...ss].sort().map(n=>`<div class="box"><div class="box-title">STEPPER ${n} <span class="pin-tag">STEP:${pins['stepper'+n+'_step']||'?'} DIR:${pins['stepper'+n+'_dir']||'?'}</span></div><div class="br"><button class="btn sm g" onclick="manualStep(${n},1)">CW</button><button class="btn sm b" onclick="manualStep(${n},-1)">CCW</button></div></div>`).join('');
   const piles=d.piles||{};
-  document.getElementById('servoBoxes').innerHTML=Object.entries(piles).filter(([,pc])=>!pc.dummy).map(([pn,pc])=>{const ch=pc.servo_ch,beam=pc.beam||'?',bp=pins[beam]||'?';return`<div class="box"><div class="box-title">SERVO P${pn} <span class="pin-tag">PCA:${ch}</span> <span class="pin-tag">${beam}:${bp}</span></div><div class="br"><button class="btn sm" onclick="servoNudge(${ch},-10)">-10</button><button class="btn sm" onclick="servoNudge(${ch},-1)">-1</button><button class="btn sm" onclick="servoSet(${ch},${pc.servo_down||0})">Dn</button><button class="btn sm" onclick="servoSet(${ch},${pc.servo_up||90})">Up</button><button class="btn sm" onclick="servoNudge(${ch},1)">+1</button><button class="btn sm" onclick="servoNudge(${ch},10)">+10</button><button class="btn sm r" onclick="servoRelease(${ch})">Rel</button></div></div>`}).join('');
+  document.getElementById('servoBoxes').innerHTML=Object.entries(piles).filter(([,pc])=>!pc.dummy).map(([pn,pc])=>{const ch=pc.servo_ch,beam=pc.beam||'?',bp=pins[beam]||'?';return`<div class="box"><div class="box-title">SERVO P${pn} <span class="pin-tag">PCA:${ch}</span> <span class="pin-tag">${beam}:${bp}</span></div><div class="br"><button class="btn sm" onclick="servoNudge(${ch},-10)">-10</button><button class="btn sm" onclick="servoNudge(${ch},-1)">-1</button><button class="btn sm" onclick="servoSet(${ch},180)">Dn (180°)</button><button class="btn sm" onclick="servoSet(${ch},0)">Up (0°)</button><button class="btn sm" onclick="servoNudge(${ch},1)">+1</button><button class="btn sm" onclick="servoNudge(${ch},10)">+10</button><button class="btn sm r" onclick="servoRelease(${ch})">Rel</button></div></div>`}).join('');
 }
 
 function poll(){
@@ -484,7 +484,7 @@ function poll(){
     document.getElementById('seqCycles').textContent=d.seq_cycles||0;document.getElementById('seqOsc').textContent=d.seq_osc||0;
     const ee=document.getElementById('seqError');if(d.seq_error){ee.classList.add('show');ee.textContent=d.seq_error}else ee.classList.remove('show');
     const ec=document.getElementById('seqErrorCard');if(d.seq_error_card&&d.seq_error?.includes('No match')){const c=d.seq_error_card;ec.classList.add('show');ec.innerHTML=`<strong>${c.name}</strong> · ${c.type_line||''} · CMC ${c.cmc||0} · ${(c.color_identity||[]).join(',')||'C'} · $${(c.price||0).toFixed(2)}`}else ec.classList.remove('show');
-    ['homing','oscillating','ejecting','error_eject'].forEach(p=>{const el=document.getElementById('pb-'+p);if(el)el.style.background=d.seq_phase===p?'var(--g)':'var(--sf3)'});
+    ['homing','scanning','ejecting','error_eject'].forEach(p=>{const el=document.getElementById('pb-'+p);if(el)el.style.background=d.seq_phase===p?'var(--g)':'var(--sf3)'});
     // Only set error pile input on first load
     if(!errorPileLoaded && d.error_pile!==undefined){
       document.getElementById('errorPileInput').value=d.error_pile;
