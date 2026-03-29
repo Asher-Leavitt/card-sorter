@@ -6,7 +6,12 @@
         "G"
       ]
     },
-    "formats": [],
+    "formats": [
+      {
+        "legality": "restricted",
+        "format": "Standard"
+      }
+    ],
     "languages": [],
     "layouts": [],
     "price": {
@@ -18,15 +23,11 @@
       "common",
       "uncommon"
     ],
-    "sets": [
-      {
-        "value": "BLB"
-      }
-    ],
+    "sets": [],
     "stats": [
       {
-        "stat": "cmc",
         "operator": ">",
+        "stat": "cmc",
         "value": 1
       }
     ],
@@ -35,10 +36,6 @@
         {
           "is": true,
           "name": "Creature"
-        },
-        {
-          "name": "Enchantment",
-          "is": true
         }
       ],
       "partial": true
@@ -66,24 +63,24 @@
     }
   },
   "3": {
+    "colors": {
+      "mode": "including",
+      "selected": []
+    },
+    "formats": [],
+    "languages": [],
+    "layouts": [],
     "price": {
       "currency": "usd",
       "operator": ">",
       "value": ""
     },
-    "colors": {
-      "selected": [],
-      "mode": "including"
-    },
+    "rarity": [],
+    "sets": [],
+    "stats": [],
     "types": {
       "entries": [],
       "partial": false
-    },
-    "rarity": [],
-    "stats": [],
-    "formats": [],
-    "sets": [],
-    "languages": [],
-    "layouts": []
+    }
   }
 }

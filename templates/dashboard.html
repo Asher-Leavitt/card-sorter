@@ -75,7 +75,16 @@ input[type=range]::-webkit-slider-thumb{-webkit-appearance:none;width:12px;heigh
 .pile-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:5px}
 .pile-col{background:var(--sf2);border:1px solid var(--brd);border-radius:5px;padding:7px;min-height:50px}
 .pile-col-hdr{font-family:var(--mono);font-size:10px;font-weight:700;color:var(--g);margin-bottom:4px;padding-bottom:3px;border-bottom:1px solid var(--brd)}.pile-col-hdr.err{color:var(--r)}
-.pile-card{font-size:11px;padding:2px 0;border-bottom:1px solid rgba(42,47,60,.4);color:var(--tx)}.pile-card:last-child{border-bottom:none}
+.pile-card{font-size:11px;padding:2px 0;border-bottom:1px solid rgba(42,47,60,.4);color:var(--tx);cursor:pointer}.pile-card:last-child{border-bottom:none}
+.pile-card:hover{color:var(--wh)}
+.pile-diag{display:none;background:var(--bg);border:1px solid var(--brd);border-radius:4px;padding:5px 7px;margin:3px 0;font-family:var(--mono);font-size:9px;line-height:1.6}
+.pile-diag.open{display:block}
+.pile-diag .dg-pile{margin-bottom:4px;padding-bottom:3px;border-bottom:1px solid var(--brd)}
+.pile-diag .dg-pile:last-child{border-bottom:none;margin-bottom:0;padding-bottom:0}
+.pile-diag .dg-hdr{font-weight:700;margin-bottom:2px}
+.pile-diag .dg-hdr.match{color:var(--g)}.pile-diag .dg-hdr.fail{color:var(--r)}
+.pile-diag .dg-check{padding-left:8px}
+.pile-diag .dg-pass{color:var(--g)}.pile-diag .dg-fail{color:var(--r)}
 .pile-more{font-family:var(--mono);font-size:9px;color:var(--bl);cursor:pointer;margin-top:2px}
 .test-box{background:var(--blbg);border:1px solid var(--bl);border-radius:6px;padding:10px;margin-top:8px}
 .test-box h3{font-family:var(--mono);font-size:9px;color:var(--bl);margin-bottom:6px;letter-spacing:.06em;text-transform:uppercase}
@@ -151,7 +160,7 @@ input[type=range]::-webkit-slider-thumb{-webkit-appearance:none;width:12px;heigh
   <div class="ph"><span class="pip" style="background:var(--y)"></span> Sorting Rules
     <span style="flex:1"></span>
     <button class="btn sm g" onclick="addPileTab()">+ Pile</button>
-    <button class="btn sm" onclick="saveRules()">💾 Save</button>
+    <button class="btn sm" id="saveBtn" onclick="saveRules()">💾 Save</button>
     <span style="font-size:9px;color:var(--txd);margin-left:6px">Error Pile:</span>
     <input class="sinp" id="errorPileInput" type="number" value="0" style="width:36px" min="0">
     <button class="btn sm" onclick="saveErrorPile()">Set</button>
@@ -214,9 +223,24 @@ function testSortCard(sfId, name){
   api('/api/sim/scan',{method:'POST',body:{scryfallId:sfId}}).then(r=>{
     if(r.ok){
       const c=r.card;
+      let diagHtml='';
+      if(c.diagnostics){
+        diagHtml='<div style="margin-top:6px;border-top:1px solid var(--brd);padding-top:5px">';
+        for(const [pn,info] of Object.entries(c.diagnostics).sort((a,b)=>parseInt(a[0])-parseInt(b[0]))){
+          const checks=info.checks||[];
+          if(!checks.length) continue;
+          const m=info.matched;
+          diagHtml+=`<div style="margin-bottom:3px"><span style="color:${m?'var(--g)':'var(--r)'}; font-weight:700">Pile ${pn}: ${m?'✓':'✗'}</span>`;
+          for(const ck of checks){
+            diagHtml+=`<div style="padding-left:8px;color:${ck.pass?'var(--g)':'var(--r)'};font-size:9px">${ck.field}: ${ck.detail}</div>`;
+          }
+          diagHtml+='</div>';
+        }
+        diagHtml+='</div>';
+      }
       res.style.color='var(--g)';
       res.innerHTML=`<strong>${c.name}</strong> → <span style="color:var(--wh);font-weight:700">Pile ${c.pile}</span>
-        <span style="color:var(--txd);font-size:9px;display:block;margin-top:2px">${c.type_line} · CMC ${c.cmc} · ${(c.color_identity||[]).join('')||'C'} · ${c.rarity} · $${(c.price||0).toFixed(2)}</span>`;
+        <span style="color:var(--txd);font-size:9px;display:block;margin-top:2px">${c.type_line} · CMC ${c.cmc} · ${(c.color_identity||[]).join('')||'C'} · ${c.rarity} · $${(c.price||0).toFixed(2)}</span>${diagHtml}`;
     } else {
       res.style.color='var(--r)';
       res.textContent='Error: '+(r.error||'Failed');
@@ -235,15 +259,15 @@ function rl(r){const m={common:'C',uncommon:'U',rare:'R',mythic:'M'};return m[r]
 function clearScans(){if(confirm('Clear?'))api('/api/scans/clear',{method:'POST'}).then(poll)}
 
 // Error pile — save properly and don't let polling overwrite
-let errorPileSaved=null;
+let errorPileLoaded=false;
 function saveErrorPile(){
   const v=parseInt(document.getElementById('errorPileInput').value);
   const val=isNaN(v)?0:v;
   api('/api/settings').then(s=>{
     s.error_pile=val;
     api('/api/settings',{method:'POST',body:s}).then(()=>{
-      errorPileSaved=val;
-      alert('Error pile set to '+val);
+      document.getElementById('errorPileInput').style.borderColor='var(--g)';
+      setTimeout(()=>document.getElementById('errorPileInput').style.borderColor='',1500);
     });
   });
 }
@@ -272,6 +296,46 @@ const FMTS=["Standard","Future Standard","Historic","Timeless","Gladiator","Pion
 // === RULES ===
 let rules={};let activePile="1";
 function emptyPile(){return{price:{currency:"usd",operator:">",value:""},colors:{selected:[],mode:"including"},types:{entries:[],partial:false},rarity:[],stats:[],formats:[],sets:[],languages:[],layouts:[]}}
+
+// Ensure every pile has all required fields (fixes old rules.json missing new fields)
+function hydratePile(p){
+  const d=emptyPile();
+  for(const k of Object.keys(d)){
+    if(!(k in p)) p[k]=d[k];
+  }
+  if(!p.colors) p.colors=d.colors;
+  if(!p.colors.selected) p.colors.selected=[];
+  if(!p.types) p.types=d.types;
+  if(!p.types.entries) p.types.entries=[];
+  if(!Array.isArray(p.rarity)) p.rarity=[];
+  if(!Array.isArray(p.stats)) p.stats=[];
+  if(!Array.isArray(p.formats)) p.formats=[];
+  if(!Array.isArray(p.sets)) p.sets=[];
+  if(!Array.isArray(p.languages)) p.languages=[];
+  if(!Array.isArray(p.layouts)) p.layouts=[];
+  return p;
+}
+
+let rulesDirty=false;
+function markDirty(){
+  rulesDirty=true;
+  document.getElementById('saveBtn').style.borderColor='var(--y)';
+  document.getElementById('saveBtn').style.color='var(--y)';
+  document.getElementById('saveBtn').textContent='💾 Save*';
+}
+function markClean(){
+  rulesDirty=false;
+  document.getElementById('saveBtn').style.borderColor='var(--g)';
+  document.getElementById('saveBtn').style.color='var(--g)';
+  document.getElementById('saveBtn').textContent='✓ Saved';
+  setTimeout(()=>{
+    if(!rulesDirty){
+      document.getElementById('saveBtn').style.borderColor='';
+      document.getElementById('saveBtn').style.color='';
+      document.getElementById('saveBtn').textContent='💾 Save';
+    }
+  },2000);
+}
 function isA(p,s){
   if(s==='price') return p.price&&p.price.value!=null&&p.price.value!==''&&p.price.value!==0;
   if(s==='colors') return p.colors?.selected?.length>0;
@@ -289,8 +353,8 @@ function renderTabs(){
   document.getElementById('pileTabs').innerHTML=piles.map(p=>`<div class="tab${p===activePile?' active':''}" onclick="activePile='${p}';renderTabs();renderPC()">Pile ${p}</div>`).join('');
   renderPC();
 }
-function addPileTab(){const nums=Object.keys(rules).map(Number);const n=nums.length?Math.max(...nums)+1:1;rules[String(n)]=emptyPile();activePile=String(n);renderTabs()}
-function removePileTab(p){delete rules[p];const k=Object.keys(rules);activePile=k.length?k[0]:"1";if(!k.length){rules["1"]=emptyPile();activePile="1"}renderTabs()}
+function addPileTab(){const nums=Object.keys(rules).map(Number);const n=nums.length?Math.max(...nums)+1:1;rules[String(n)]=emptyPile();activePile=String(n);markDirty();renderTabs()}
+function removePileTab(p){delete rules[p];const k=Object.keys(rules);activePile=k.length?k[0]:"1";if(!k.length){rules["1"]=emptyPile();activePile="1"}markDirty();renderTabs()}
 
 function setsOG(){let h='<option value="">— Set —</option>';for(const[cat,sets]of Object.entries(SETS_DATA)){h+=`<optgroup label="${cat}">`;for(const[c,n]of sets)h+=`<option value="${c}">${c} — ${n}</option>`;h+='</optgroup>'}return h}
 function typeOG(){let h='<option value="">— Add type —</option>';h+=`<optgroup label="Types">${TYPES.types.map(t=>`<option>${t}</option>`).join('')}</optgroup>`;h+=`<optgroup label="Supertypes">${TYPES.supertypes.map(t=>`<option>${t}</option>`).join('')}</optgroup>`;h+=`<optgroup label="Artifact Subtypes">${TYPES.artifact.map(t=>`<option>${t}</option>`).join('')}</optgroup>`;h+=`<optgroup label="Enchantment Subtypes">${TYPES.enchantment.map(t=>`<option>${t}</option>`).join('')}</optgroup>`;h+=`<optgroup label="Land Subtypes">${TYPES.land.map(t=>`<option>${t}</option>`).join('')}</optgroup>`;h+=`<optgroup label="Creature Subtypes">${TYPES.creature.map(t=>`<option>${t}</option>`).join('')}</optgroup>`;return h}
@@ -300,18 +364,18 @@ function renderPC(){
   document.getElementById('pileContents').innerHTML=`
   <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px">
     <span style="font-family:var(--mono);font-size:11px;color:var(--wh);font-weight:700">Pile ${activePile}</span>
-    <div class="br"><label style="font-family:var(--mono);font-size:10px;cursor:pointer;display:flex;align-items:center;gap:3px;color:var(--txd)"><input type="checkbox" ${p.dummy?'checked':''} onchange="rules[activePile].dummy=this.checked">Dummy (no servo)</label><button class="btn sm r" onclick="removePileTab('${activePile}')">✕ Remove</button></div>
+    <div class="br"><label style="font-family:var(--mono);font-size:10px;cursor:pointer;display:flex;align-items:center;gap:3px;color:var(--txd)"><input type="checkbox" ${p.dummy?'checked':''} onchange="rules[activePile].dummy=this.checked;markDirty()">Dummy (no servo)</label><button class="btn sm r" onclick="removePileTab('${activePile}')">✕ Remove</button></div>
   </div>
   <div class="rsec ${isA(p,'price')?'active':''}"><div class="rsec-title"><span class="act-dot"></span>Price</div>
-  <div class="row"><select class="ssel" onchange="rules[activePile].price.currency=this.value"><option value="usd"${p.price.currency==='usd'?' selected':''}>USD</option><option value="eur"${p.price.currency==='eur'?' selected':''}>EUR</option></select><select class="ssel" onchange="rules[activePile].price.operator=this.value">${['<','>','<=','>='].map(o=>`<option${p.price.operator===o?' selected':''}>${o}</option>`).join('')}</select><input class="sinp" type="number" step="0.01" style="width:70px" value="${p.price.value}" onchange="rules[activePile].price.value=this.value?parseFloat(this.value):'';renderPC()"></div></div>
+  <div class="row"><select class="ssel" onchange="rules[activePile].price.currency=this.value;markDirty()"><option value="usd"${p.price.currency==='usd'?' selected':''}>USD</option><option value="eur"${p.price.currency==='eur'?' selected':''}>EUR</option></select><select class="ssel" onchange="rules[activePile].price.operator=this.value;markDirty()">${['<','>','<=','>='].map(o=>`<option${p.price.operator===o?' selected':''}>${o}</option>`).join('')}</select><input class="sinp" type="number" step="0.01" style="width:70px" value="${p.price.value}" onchange="rules[activePile].price.value=this.value?parseFloat(this.value):'';markDirty();renderPC()"></div></div>
   <div class="rsec ${isA(p,'colors')?'active':''}"><div class="rsec-title"><span class="act-dot"></span>Colors</div>
   <div class="color-cb">${[['W','White','☀'],['U','Blue','💧'],['B','Black','💀'],['R','Red','🔥'],['G','Green','🌲']].map(([c,n,i])=>`<div class="${p.colors.selected.includes(c)?'checked':''}" onclick="toggleColor('${c}')"><span class="mana ${c}">${i}</span>${n}</div>`).join('')}</div>
-  <div class="row" style="margin-top:4px"><select class="ssel" onchange="rules[activePile].colors.mode=this.value"><option value="exactly"${p.colors.mode==='exactly'?' selected':''}>Exactly these colors</option><option value="including"${p.colors.mode==='including'?' selected':''}>Including these colors</option><option value="at_most"${p.colors.mode==='at_most'?' selected':''}>At most these colors</option></select></div>
+  <div class="row" style="margin-top:4px"><select class="ssel" onchange="rules[activePile].colors.mode=this.value;markDirty()"><option value="exactly"${p.colors.mode==='exactly'?' selected':''}>Exactly these colors</option><option value="including"${p.colors.mode==='including'?' selected':''}>Including these colors</option><option value="at_most"${p.colors.mode==='at_most'?' selected':''}>At most these colors</option></select></div>
   <div style="font-size:8px;color:var(--txd);margin-top:2px;font-style:italic">"Including" = all selected + maybe others. "At most" = some/all selected + colorless.</div></div>
   <div class="rsec ${isA(p,'types')?'active':''}"><div class="rsec-title"><span class="act-dot"></span>Type Line</div>
   <div style="display:flex;gap:4px;margin-bottom:4px"><select class="ssel" id="typeSelect" style="flex:1;max-width:200px">${typeOG()}</select><button class="btn sm g" onclick="addType()">Add</button></div>
   <div>${(p.types.entries||[]).map((e,i)=>`<span class="type-chip"><span class="is-btn ${e.is?'is':'not'}" onclick="toggleTypeIs(${i})">${e.is?'IS':'NOT'}</span>${e.name}<span class="x" onclick="removeType(${i})">✕</span></span>`).join('')}</div>
-  <label style="display:flex;align-items:center;gap:3px;font-family:var(--mono);font-size:10px;margin-top:3px;cursor:pointer"><input type="checkbox" ${p.types.partial?'checked':''} onchange="rules[activePile].types.partial=this.checked"> Allow partial matches</label>
+  <label style="display:flex;align-items:center;gap:3px;font-family:var(--mono);font-size:10px;margin-top:3px;cursor:pointer"><input type="checkbox" ${p.types.partial?'checked':''} onchange="rules[activePile].types.partial=this.checked;markDirty()"> Allow partial matches</label>
   <div style="font-size:8px;color:var(--txd);margin-top:2px;font-style:italic">Click IS/NOT to toggle include/exclude.</div></div>
   <div class="rsec ${isA(p,'rarity')?'active':''}"><div class="rsec-title"><span class="act-dot"></span>Rarity</div>
   <div class="rar-cb">${['common','uncommon','rare','mythic'].map(r=>`<div class="${r} ${p.rarity.includes(r)?'checked':''}" onclick="toggleRarity('${r}')">${r}</div>`).join('')}</div></div>
@@ -334,35 +398,67 @@ function renderPC(){
   `;
 }
 
-function toggleColor(c){const s=rules[activePile].colors.selected;const i=s.indexOf(c);if(i>=0)s.splice(i,1);else s.push(c);renderPC()}
-function toggleRarity(r){const a=rules[activePile].rarity;const i=a.indexOf(r);if(i>=0)a.splice(i,1);else a.push(r);renderPC()}
-function addType(){const s=document.getElementById('typeSelect');if(!s.value)return;rules[activePile].types.entries.push({name:s.value,is:true});s.value='';renderPC()}
-function toggleTypeIs(i){rules[activePile].types.entries[i].is=!rules[activePile].types.entries[i].is;renderPC()}
-function removeType(i){rules[activePile].types.entries.splice(i,1);renderPC()}
-function addSetFrom(id){const s=document.getElementById(id);if(!s.value)return;rules[activePile].sets.push({value:s.value});s.value='';renderPC()}
-function addLang(){const s=document.getElementById('langSelect');if(!s.value)return;rules[activePile].languages.push({name:s.value,is:true});s.value='';renderPC()}
-function toggleLangIs(i){rules[activePile].languages[i].is=!rules[activePile].languages[i].is;renderPC()}
-function addLayout(){const s=document.getElementById('layoutSelect');if(!s.value)return;rules[activePile].layouts.push({name:s.value,is:true});s.value='';renderPC()}
-function toggleLayoutIs(i){rules[activePile].layouts[i].is=!rules[activePile].layouts[i].is;renderPC()}
+function toggleColor(c){const s=rules[activePile].colors.selected;const i=s.indexOf(c);if(i>=0)s.splice(i,1);else s.push(c);markDirty();renderPC()}
+function toggleRarity(r){const a=rules[activePile].rarity;const i=a.indexOf(r);if(i>=0)a.splice(i,1);else a.push(r);markDirty();renderPC()}
+function addType(){const s=document.getElementById('typeSelect');if(!s.value)return;rules[activePile].types.entries.push({name:s.value,is:true});s.value='';markDirty();renderPC()}
+function toggleTypeIs(i){rules[activePile].types.entries[i].is=!rules[activePile].types.entries[i].is;markDirty();renderPC()}
+function removeType(i){rules[activePile].types.entries.splice(i,1);markDirty();renderPC()}
+function addSetFrom(id){const s=document.getElementById(id);if(!s.value)return;rules[activePile].sets.push({value:s.value});s.value='';markDirty();renderPC()}
+function addLang(){const s=document.getElementById('langSelect');if(!s.value)return;rules[activePile].languages.push({name:s.value,is:true});s.value='';markDirty();renderPC()}
+function toggleLangIs(i){rules[activePile].languages[i].is=!rules[activePile].languages[i].is;markDirty();renderPC()}
+function addLayout(){const s=document.getElementById('layoutSelect');if(!s.value)return;rules[activePile].layouts.push({name:s.value,is:true});s.value='';markDirty();renderPC()}
+function toggleLayoutIs(i){rules[activePile].layouts[i].is=!rules[activePile].layouts[i].is;markDirty();renderPC()}
 
 const SO=['Mana Value','Power','Toughness'];const SM={'Mana Value':'cmc',Power:'power',Toughness:'toughness'};const SR={cmc:'Mana Value',power:'Power',toughness:'Toughness'};
-function statRow(s,i){return`<div class="row"><select class="ssel" onchange="rules[activePile].stats[${i}].stat=SM[this.value]">${SO.map(o=>`<option${(SR[s.stat]||'')==o?' selected':''}>${o}</option>`).join('')}</select><select class="ssel" onchange="rules[activePile].stats[${i}].operator=this.value">${['<','>','<=','>=','=','!='].map(o=>`<option${s.operator===o?' selected':''}>${o}</option>`).join('')}</select><input class="sinp" type="number" style="width:50px" value="${s.value}" onchange="rules[activePile].stats[${i}].value=parseFloat(this.value)"><button class="btn sm r" onclick="rules[activePile].stats.splice(${i},1);renderPC()">✕</button></div>`}
-function addStat(){rules[activePile].stats.push({stat:'cmc',operator:'>',value:0});renderPC()}
-function fmtRow(f,i){return`<div class="row"><select class="ssel" onchange="rules[activePile].formats[${i}].legality=this.value">${['legal','restricted','banned'].map(o=>`<option${f.legality===o?' selected':''}>${o}</option>`).join('')}</select><span style="font-size:9px;color:var(--txd)">in</span><select class="ssel" onchange="rules[activePile].formats[${i}].format=this.value">${FMTS.map(o=>`<option${f.format===o?' selected':''}>${o}</option>`).join('')}</select><button class="btn sm r" onclick="rules[activePile].formats.splice(${i},1);renderPC()">✕</button></div>`}
-function addFmt(){rules[activePile].formats.push({legality:'legal',format:'Standard'});renderPC()}
+function statRow(s,i){return`<div class="row"><select class="ssel" onchange="rules[activePile].stats[${i}].stat=SM[this.value];markDirty()">${SO.map(o=>`<option${(SR[s.stat]||'')==o?' selected':''}>${o}</option>`).join('')}</select><select class="ssel" onchange="rules[activePile].stats[${i}].operator=this.value;markDirty()">${['<','>','<=','>=','=','!='].map(o=>`<option${s.operator===o?' selected':''}>${o}</option>`).join('')}</select><input class="sinp" type="number" style="width:50px" value="${s.value}" onchange="rules[activePile].stats[${i}].value=parseFloat(this.value);markDirty()"><button class="btn sm r" onclick="rules[activePile].stats.splice(${i},1);markDirty();renderPC()">✕</button></div>`}
+function addStat(){rules[activePile].stats.push({stat:'cmc',operator:'>',value:0});markDirty();renderPC()}
+function fmtRow(f,i){return`<div class="row"><select class="ssel" onchange="rules[activePile].formats[${i}].legality=this.value;markDirty()">${['legal','restricted','banned'].map(o=>`<option${f.legality===o?' selected':''}>${o}</option>`).join('')}</select><span style="font-size:9px;color:var(--txd)">in</span><select class="ssel" onchange="rules[activePile].formats[${i}].format=this.value;markDirty()">${FMTS.map(o=>`<option${f.format===o?' selected':''}>${o}</option>`).join('')}</select><button class="btn sm r" onclick="rules[activePile].formats.splice(${i},1);markDirty();renderPC()">✕</button></div>`}
+function addFmt(){rules[activePile].formats.push({legality:'legal',format:'Standard'});markDirty();renderPC()}
 
-function saveRules(){api('/api/rules',{method:'POST',body:rules}).then(()=>alert('Rules saved!'))}
-api('/api/rules').then(d=>{if(typeof d==='object'&&!Array.isArray(d)){rules=d}else{rules={"1":emptyPile()}}const k=Object.keys(rules);activePile=k.length?k[0]:"1";renderTabs()});
+function saveRules(){api('/api/rules',{method:'POST',body:rules}).then(()=>markClean())}
+api('/api/rules').then(d=>{
+  if(typeof d==='object'&&!Array.isArray(d)){
+    rules=d;
+    // Hydrate each pile to ensure all fields exist
+    for(const k of Object.keys(rules)) rules[k]=hydratePile(rules[k]);
+  }else{rules={"1":emptyPile()}}
+  const k=Object.keys(rules);activePile=k.length?k[0]:"1";renderTabs();
+});
+
+let logId=0;
+function renderDiag(diag){
+  if(!diag) return '<span style="color:var(--txd)">No diagnostics</span>';
+  let h='';
+  for(const [pn,info] of Object.entries(diag).sort((a,b)=>parseInt(a[0])-parseInt(b[0]))){
+    const checks=info.checks||[];
+    if(!checks.length) continue;
+    const m=info.matched;
+    h+=`<div class="dg-pile"><div class="dg-hdr ${m?'match':'fail'}">Pile ${pn}: ${m?'✓ MATCHED':'✗ Failed'}</div>`;
+    for(const c of checks){
+      h+=`<div class="dg-check ${c.pass?'dg-pass':'dg-fail'}">${c.field}: ${c.detail}</div>`;
+    }
+    h+='</div>';
+  }
+  return h||'<span style="color:var(--txd)">No criteria configured</span>';
+}
+
+function toggleDiag(id){
+  const el=document.getElementById('diag-'+id);
+  if(el) el.classList.toggle('open');
+}
 
 const pileExp={};
 function renderLog(scans){
   document.getElementById('totalCt').textContent=scans.length;
   if(!scans.length){document.getElementById('logGrid').innerHTML='<div style="grid-column:1/-1;color:var(--txd);font-style:italic;padding:10px;text-align:center">No scans yet</div>';return}
-  const g={};scans.forEach(s=>{const p=s.pile??0;if(!g[p])g[p]=[];g[p].push(s)});
+  const g={};scans.forEach((s,i)=>{s._idx=i;const p=s.pile??0;if(!g[p])g[p]=[];g[p].push(s)});
   const keys=Object.keys(g).map(Number).sort((a,b)=>a-b);const MX=8;
   document.getElementById('logGrid').innerHTML=keys.map(p=>{
     const rev=[...g[p]].reverse();const exp=pileExp[p];const show=exp?rev:rev.slice(0,MX);const more=rev.length>MX&&!exp;
-    return`<div class="pile-col"><div class="pile-col-hdr${p===0?' err':''}">Pile ${p}${p===0?' (Error)':''} (${g[p].length})</div>${show.map(c=>`<div class="pile-card">${c.name}</div>`).join('')}${more?`<div class="pile-more" onclick="pileExp[${p}]=true;poll()">... ${rev.length-MX} more</div>`:''}</div>`;
+    return`<div class="pile-col"><div class="pile-col-hdr${p===0?' err':''}">Pile ${p}${p===0?' (Error)':''} (${g[p].length})</div>${show.map(c=>{
+      const did='d'+c._idx;
+      return`<div class="pile-card" onclick="toggleDiag('${did}')">${c.name} <span style="font-size:8px;color:var(--txd)">▾</span></div><div class="pile-diag" id="diag-${did}">${renderDiag(c.diagnostics)}</div>`;
+    }).join('')}${more?`<div class="pile-more" onclick="pileExp[${p}]=true;poll()">... ${rev.length-MX} more</div>`:''}</div>`;
   }).join('');
 }
 
@@ -389,9 +485,11 @@ function poll(){
     const ee=document.getElementById('seqError');if(d.seq_error){ee.classList.add('show');ee.textContent=d.seq_error}else ee.classList.remove('show');
     const ec=document.getElementById('seqErrorCard');if(d.seq_error_card&&d.seq_error?.includes('No match')){const c=d.seq_error_card;ec.classList.add('show');ec.innerHTML=`<strong>${c.name}</strong> · ${c.type_line||''} · CMC ${c.cmc||0} · ${(c.color_identity||[]).join(',')||'C'} · $${(c.price||0).toFixed(2)}`}else ec.classList.remove('show');
     ['homing','oscillating','ejecting','error_eject'].forEach(p=>{const el=document.getElementById('pb-'+p);if(el)el.style.background=d.seq_phase===p?'var(--g)':'var(--sf3)'});
-    // Only set error pile input if user hasn't just saved a different value
-    if(d.error_pile!==undefined && errorPileSaved===null) document.getElementById('errorPileInput').value=d.error_pile;
-    else if(errorPileSaved!==null && d.error_pile===errorPileSaved) errorPileSaved=null; // server caught up
+    // Only set error pile input on first load
+    if(!errorPileLoaded && d.error_pile!==undefined){
+      document.getElementById('errorPileInput').value=d.error_pile;
+      errorPileLoaded=true;
+    }
     if(d.current_card&&d.current_card.timestamp!==lastTs){lastTs=d.current_card.timestamp;renderCard(d.current_card)}
   });api('/api/scans').then(renderLog);
 }

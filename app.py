@@ -196,8 +196,14 @@ def enrich_card(dc):
     if sf:
         e.update(sf)
         if e["price"]==0:
-            try: e["price"]=float(sf.get("prices",{}).get("usd",0) or 0)
-            except: pass
+            # Try multiple price sources from Scryfall
+            pr = sf.get("prices",{}) if sf else {}
+            for pk in ["usd","eur","usd_foil","eur_foil"]:
+                try:
+                    v = pr.get(pk)
+                    if v is not None:
+                        e["price"]=float(v); break
+                except: pass
     else:
         e.update({"cmc":0,"colors":[],"color_identity":[],"type_line":dc.get("cardType",""),
                    "mana_cost":"","oracle_text":"","power":"","toughness":"","keywords":[],
@@ -236,135 +242,187 @@ def _compare(v,op,t):
     if op=="!=": return v!=t
     return False
 
-def evaluate_rules(card,rules):
-    for ps in sorted(rules.keys(),key=lambda x:int(x)):
-        if _matches_pile(card,rules[ps]): return int(ps)
-    return 0
+def evaluate_rules(card, rules, error_pile=0):
+    """Evaluate rules, apply error_pile mapping, return (pile, diagnostics)."""
+    diag = {}
+    for ps in sorted(rules.keys(), key=lambda x: int(x)):
+        result = _diagnose_pile(card, rules[ps])
+        diag[ps] = result
+        if result["matched"]:
+            return int(ps), diag
+    # No match — apply error pile
+    final = error_pile if error_pile else 0
+    return final, diag
 
-def _matches_pile(card,crit):
-    matched_any=False
+def _diagnose_pile(card, crit):
+    """Check card against pile criteria. Returns {matched, checks:[{field,pass,detail}]}."""
+    checks = []
+    has_criteria = False
 
     # PRICE
-    pc=crit.get("price",{})
-    if pc and pc.get("value") not in (None,"",0):
-        matched_any=True
-        cur=pc.get("currency","usd"); prices=card.get("prices",{})
-        if cur=="eur":
-            try: pv=float(prices.get("eur",0) or 0)
-            except: pv=0
+    pc = crit.get("price", {})
+    if pc and pc.get("value") not in (None, "", 0):
+        has_criteria = True
+        cur = pc.get("currency", "usd")
+        prices = card.get("prices", {})
+        if cur == "eur":
+            try: pv = float(prices.get("eur", 0) or 0)
+            except: pv = 0
         else:
-            try: pv=float(prices.get("usd",0) or card.get("price",0))
-            except: pv=float(card.get("price",0))
-        if not _compare(pv,pc.get("operator",">"),pc["value"]): return False
+            try: pv = float(prices.get("usd", 0) or card.get("price", 0))
+            except: pv = float(card.get("price", 0))
+        op = pc.get("operator", ">")
+        ok = _compare(pv, op, pc["value"])
+        checks.append({"field": "price", "pass": ok,
+            "detail": f"${pv:.2f} {op} ${float(pc['value']):.2f}" + (" ✓" if ok else " ✗")})
 
     # COLORS
-    cc=crit.get("colors",{})
-    sel=[c.upper() for c in cc.get("selected",[])]
+    cc = crit.get("colors", {})
+    sel = [c.upper() for c in cc.get("selected", [])]
     if sel:
-        matched_any=True
-        card_c=[c.upper() for c in card.get("color_identity",[])]
-        mode=cc.get("mode","including")
-        if mode=="exactly" and sorted(card_c)!=sorted(sel): return False
-        elif mode=="including" and not all(c in card_c for c in sel): return False
-        elif mode=="at_most" and not all(c in sel for c in card_c): return False
+        has_criteria = True
+        card_c = [c.upper() for c in card.get("color_identity", [])]
+        mode = cc.get("mode", "including")
+        card_str = "".join(card_c) or "colorless"
+        sel_str = "".join(sel)
+        if mode == "exactly":
+            ok = sorted(card_c) == sorted(sel)
+            checks.append({"field": "colors", "pass": ok,
+                "detail": f"Card {card_str}, need exactly {sel_str}" + (" ✓" if ok else " ✗")})
+        elif mode == "including":
+            ok = all(c in card_c for c in sel)
+            checks.append({"field": "colors", "pass": ok,
+                "detail": f"Card {card_str}, need including {sel_str}" + (" ✓" if ok else " ✗")})
+        elif mode == "at_most":
+            ok = all(c in sel for c in card_c)
+            checks.append({"field": "colors", "pass": ok,
+                "detail": f"Card {card_str}, at most {sel_str}" + (" ✓" if ok else " ✗")})
 
     # TYPE LINE
-    tc=crit.get("types",{})
-    entries=tc.get("entries",[])
+    tc = crit.get("types", {})
+    entries = tc.get("entries", [])
     if entries:
-        matched_any=True
-        tl=card.get("type_line","").lower()
-        is_t=[e["name"].lower() for e in entries if e.get("is",True)]
-        not_t=[e["name"].lower() for e in entries if not e.get("is",True)]
+        has_criteria = True
+        tl = card.get("type_line", "").lower()
+        is_t = [e["name"].lower() for e in entries if e.get("is", True)]
+        not_t = [e["name"].lower() for e in entries if not e.get("is", True)]
+        ok = True
+        reasons = []
         for nt in not_t:
-            if nt in tl: return False
+            if nt in tl:
+                ok = False; reasons.append(f"has excluded '{nt}'")
         if is_t:
-            if tc.get("partial",False):
-                if not any(it in tl for it in is_t): return False
+            if tc.get("partial", False):
+                if not any(it in tl for it in is_t):
+                    ok = False; reasons.append(f"needs any of {is_t}")
             else:
-                if not all(it in tl for it in is_t): return False
+                missing = [it for it in is_t if it not in tl]
+                if missing:
+                    ok = False; reasons.append(f"missing {missing}")
+        detail = f"'{card.get('type_line','')}'"
+        if reasons: detail += " — " + ", ".join(reasons)
+        checks.append({"field": "types", "pass": ok, "detail": detail + (" ✓" if ok else " ✗")})
 
     # RARITY
-    rc=crit.get("rarity",[])
+    rc = crit.get("rarity", [])
     if rc:
-        matched_any=True
-        if card.get("rarity","").lower() not in [r.lower() for r in rc]: return False
+        has_criteria = True
+        cr = card.get("rarity", "").lower()
+        ok = cr in [r.lower() for r in rc]
+        checks.append({"field": "rarity", "pass": ok,
+            "detail": f"Card is {cr}, need {'/'.join(rc)}" + (" ✓" if ok else " ✗")})
 
     # STATS
-    sc=crit.get("stats",[])
+    sc = crit.get("stats", [])
     if sc:
-        matched_any=True
+        has_criteria = True
         for s in sc:
-            stat=s.get("stat","cmc")
-            if stat in ("cmc","mana_value"): val=card.get("cmc",0)
-            elif stat=="power":
-                try: val=float(card.get("power",0))
-                except: val=0
-            elif stat=="toughness":
-                try: val=float(card.get("toughness",0))
-                except: val=0
-            else: val=0
-            if not _compare(val,s.get("operator",">"),s.get("value",0)): return False
+            stat = s.get("stat", "cmc")
+            if stat in ("cmc", "mana_value"): val = card.get("cmc", 0); sn = "CMC"
+            elif stat == "power":
+                try: val = float(card.get("power", 0))
+                except: val = 0
+                sn = "Power"
+            elif stat == "toughness":
+                try: val = float(card.get("toughness", 0))
+                except: val = 0
+                sn = "Toughness"
+            else: val = 0; sn = stat
+            op = s.get("operator", ">")
+            ok = _compare(val, op, s.get("value", 0))
+            checks.append({"field": "stats", "pass": ok,
+                "detail": f"{sn} {val} {op} {s.get('value',0)}" + (" ✓" if ok else " ✗")})
 
     # FORMATS
-    fc=crit.get("formats",[])
+    fc = crit.get("formats", [])
     if fc:
-        matched_any=True
-        legs=card.get("legalities",{})
-        fmt_map={"standard":"standard","futurestandard":"future","historic":"historic",
-                 "timeless":"timeless","gladiator":"gladiator","pioneer":"pioneer",
-                 "modern":"modern","legacy":"legacy","pauper":"pauper","vintage":"vintage",
-                 "pennydreadful":"penny","commander":"commander","oathbreaker":"oathbreaker",
-                 "standardbrawl":"standardbrawl","brawl":"brawl","alchemy":"alchemy",
-                 "paupercommander":"paupercommander","duelcommander":"duel",
-                 "oldschool93/94":"oldschool","premodern":"premodern","predh":"predh"}
+        has_criteria = True
+        legs = card.get("legalities", {})
+        fmt_map = {"standard":"standard","futurestandard":"future","historic":"historic",
+                   "timeless":"timeless","gladiator":"gladiator","pioneer":"pioneer",
+                   "modern":"modern","legacy":"legacy","pauper":"pauper","vintage":"vintage",
+                   "pennydreadful":"penny","commander":"commander","oathbreaker":"oathbreaker",
+                   "standardbrawl":"standardbrawl","brawl":"brawl","alchemy":"alchemy",
+                   "paupercommander":"paupercommander","duelcommander":"duel",
+                   "oldschool93/94":"oldschool","premodern":"premodern","predh":"predh"}
         for f in fc:
-            fk=f.get("format","").lower().replace(" ","")
-            sfk=fmt_map.get(fk,fk)
-            if legs.get(sfk,"not_legal")!=f.get("legality","legal").lower(): return False
+            fk = f.get("format", "").lower().replace(" ", "")
+            sfk = fmt_map.get(fk, fk)
+            actual = legs.get(sfk, "not_legal")
+            req = f.get("legality", "legal").lower()
+            ok = actual == req
+            checks.append({"field": "formats", "pass": ok,
+                "detail": f"{f.get('format','?')}: {actual}, need {req}" + (" ✓" if ok else " ✗")})
 
     # SETS
-    sets_crit=crit.get("sets",[])
+    sets_crit = crit.get("sets", [])
     if sets_crit:
-        matched_any=True
-        card_set=card.get("set_code","").upper()
-        card_set_name=card.get("set_name","").lower()
-        # Sets criteria: list of set codes or names
-        found=False
+        has_criteria = True
+        card_set = card.get("set_code", "").upper()
+        card_set_name = card.get("set_name", "").lower()
+        found = False
         for s in sets_crit:
-            sv=s.get("value","")
-            if sv.upper()==card_set or sv.lower()==card_set_name or sv.lower() in card_set_name:
-                found=True; break
-        if not found: return False
+            sv = s.get("value", "")
+            if sv.upper() == card_set or sv.lower() == card_set_name or sv.lower() in card_set_name:
+                found = True; break
+        checks.append({"field": "sets", "pass": found,
+            "detail": f"Card set {card_set}, need {'/'.join(s.get('value','') for s in sets_crit)}" + (" ✓" if found else " ✗")})
 
     # LANGUAGES
-    lang_crit=crit.get("languages",[])
+    lang_crit = crit.get("languages", [])
     if lang_crit:
-        matched_any=True
-        card_lang=card.get("lang","en").lower()
-        lang_map={"english":"en","spanish":"es","french":"fr","german":"de","italian":"it",
-                  "portuguese":"pt","japanese":"ja","korean":"ko","russian":"ru",
-                  "simplified chinese":"zhs","traditional chinese":"zht","hebrew":"he",
-                  "latin":"la","ancient greek":"grc","arabic":"ar","sanskrit":"sa",
-                  "phyrexian":"ph","quenya":"qya"}
-        is_l=[lang_map.get(e["name"].lower(),e["name"].lower()) for e in lang_crit if e.get("is",True)]
-        not_l=[lang_map.get(e["name"].lower(),e["name"].lower()) for e in lang_crit if not e.get("is",True)]
+        has_criteria = True
+        card_lang = card.get("lang", "en").lower()
+        lang_map = {"english":"en","spanish":"es","french":"fr","german":"de","italian":"it",
+                    "portuguese":"pt","japanese":"ja","korean":"ko","russian":"ru",
+                    "simplified chinese":"zhs","traditional chinese":"zht","hebrew":"he",
+                    "latin":"la","ancient greek":"grc","arabic":"ar","sanskrit":"sa",
+                    "phyrexian":"ph","quenya":"qya"}
+        is_l = [lang_map.get(e["name"].lower(), e["name"].lower()) for e in lang_crit if e.get("is", True)]
+        not_l = [lang_map.get(e["name"].lower(), e["name"].lower()) for e in lang_crit if not e.get("is", True)]
+        ok = True
         for nl in not_l:
-            if card_lang==nl: return False
-        if is_l and card_lang not in is_l: return False
+            if card_lang == nl: ok = False
+        if is_l and card_lang not in is_l: ok = False
+        checks.append({"field": "language", "pass": ok,
+            "detail": f"Card lang {card_lang}" + (" ✓" if ok else " ✗")})
 
     # LAYOUTS
-    lc=crit.get("layouts",[])
+    lc = crit.get("layouts", [])
     if lc:
-        matched_any=True
-        card_layout=card.get("layout","normal").lower()
-        is_lay=[e["name"].lower() for e in lc if e.get("is",True)]
-        not_lay=[e["name"].lower() for e in lc if not e.get("is",True)]
+        has_criteria = True
+        card_layout = card.get("layout", "normal").lower()
+        is_lay = [e["name"].lower() for e in lc if e.get("is", True)]
+        not_lay = [e["name"].lower() for e in lc if not e.get("is", True)]
+        ok = True
         for nl in not_lay:
-            if card_layout==nl: return False
-        if is_lay and card_layout not in is_lay: return False
+            if card_layout == nl: ok = False
+        if is_lay and card_layout not in is_lay: ok = False
+        checks.append({"field": "layout", "pass": ok,
+            "detail": f"Card layout {card_layout}" + (" ✓" if ok else " ✗")})
 
-    return matched_any
+    all_pass = has_criteria and all(c["pass"] for c in checks)
+    return {"matched": all_pass, "checks": checks}
 
 # --- SETTINGS ---
 SETTINGS_FILE=os.path.join(os.path.dirname(os.path.abspath(__file__)),"settings.json")
@@ -393,130 +451,271 @@ class SequenceState:
 seq=SequenceState()
 
 def continuous_sort_loop():
-    s1s=PINS["stepper1_step"];s1d=PINS["stepper1_dir"]
-    s2s=PINS["stepper2_step"];s2d=PINS["stepper2_dir"]
-    beam0=PINS["beam0"];cfg=get_sort_config();delay=cfg["step_delay"]
+    """Full sorting cycle with crash protection."""
+    try:
+        _sort_loop_inner()
+    except Exception as e:
+        print(f"[SEQ] !!!! CRASH: {e}")
+        traceback.print_exc()
+        with seq.lock:
+            seq.error = f"CRASH: {e}"
+            seq.running = False
+            seq.phase = "idle"
+            seq.status_msg = f"Crashed: {e}"
+
+def _sort_loop_inner():
+    """
+    Full sorting cycle:
+      1. HOME: S1 CCW until beam0 (20s timeout → intake error, stop)
+      2. SCAN: S1 oscillates CW/CCW (800 steps forward, pause, CCW to beam0)
+         - Timeout: S1 CCW until beam0 passthrough → error pile, continue
+      3. ROUTE based on pile number:
+         - Pile 0 (error): S1 CCW until beam0 passthrough, show diagnostics
+         - Pile 1 (special): S1+S2 CW to beam1, then shuffle back/forth
+         - Pile N>1 (servo): servo UP, S1+S2 CW until beam passthrough + extra, servo DOWN
+         - Dummy pile: S1+S2 CW until beam passthrough + extra, no servo
+      4. REPEAT until stop
+    """
+    s1s=PINS["stepper1_step"]; s1d=PINS["stepper1_dir"]
+    s2s=PINS["stepper2_step"]; s2d=PINS["stepper2_dir"]
+    beam0=PINS["beam0"]
+
+    print(f"[SEQ] ═══ Sort loop starting ═══")
+    print(f"[SEQ] Pins: S1 step={s1s} dir={s1d}, S2 step={s2s} dir={s2d}, beam0={beam0}")
 
     with seq.lock:
-        seq.running=True;seq.stop_requested=False;seq.cycle_count=0;seq.error="";seq.last_error_card=None
+        seq.running=True; seq.stop_requested=False; seq.cycle_count=0
+        seq.error=""; seq.last_error_card=None
         with current_card_lock: c=current_card["card"]
         seq.last_scan_ts=c["timestamp"] if c else ""
 
+    cfg = get_sort_config(); delay = cfg["step_delay"]
+    print(f"[SEQ] Config: delay={delay}, fwd={cfg['osc_forward_steps']}, timeout={cfg['home_timeout_sec']}s")
+
+    print("[SEQ] ═══ Entering main loop ═══")
+
     while not _should_stop():
-        cycle=seq.cycle_count+1;cfg=get_sort_config();delay=cfg["step_delay"]
-        piles=get_pile_config();error_pile=get_error_pile()
+        cycle = seq.cycle_count + 1
+        cfg = get_sort_config(); delay = cfg["step_delay"]
+        piles = get_pile_config(); error_pile = get_error_pile()
 
         # 1. HOME
-        _set_phase("homing",f"C{cycle}: Homing")
-        ts=int(cfg["home_timeout_sec"]/(delay*2))
-        r,_=_beam_i(s1s,s1d,beam0,direction=-1,delay=delay,max_steps=ts)
-        if r=="stopped": break
-        if r=="max_steps":
-            with seq.lock: seq.error=f"C{cycle}: Intake error — beam0 not hit"
-            break
+        _set_phase("homing", f"C{cycle}: Homing S1 CCW → beam0")
+        timeout_steps = int(cfg["home_timeout_sec"] / (delay * 2))
+        print(f"[SEQ] C{cycle}: Homing — max {timeout_steps} steps, delay={delay}")
 
-        # 2. OSCILLATE
-        _set_phase("oscillating",f"C{cycle}: Oscillating")
-        with seq.lock: seq.osc_count=0
-        with current_card_lock: c=current_card["card"]
-        with seq.lock: seq.last_scan_ts=c["timestamp"] if c else ""
-        scanned=False;max_osc=cfg.get("scan_timeout_osc",60)
+        r, steps = _beam_i(s1s, s1d, beam0, -1, delay=delay, mx=timeout_steps)
+        print(f"[SEQ] C{cycle}: Home result: {r}, steps={steps}")
+
+        if r == "stopped": break
+        if r == "max_steps":
+            with seq.lock:
+                seq.error = f"C{cycle}: Intake error — failed to extract card (beam0 not hit in {cfg['home_timeout_sec']}s)"
+            _set_phase("error", seq.error)
+            break  # fatal — needs manual intervention
+
+        print(f"[SEQ] C{cycle}: Homed after {steps} steps")
+
+        # ══════════════════════════════════════════════════════════════
+        # 2. SCAN — Oscillate S1 CW/CCW until Delver scans
+        # ══════════════════════════════════════════════════════════════
+        _set_phase("oscillating", f"C{cycle}: Oscillating — waiting for scan")
+        with seq.lock: seq.osc_count = 0
+        # Snapshot scan timestamp so we only react to NEW scans
+        with current_card_lock: c = current_card["card"]
+        with seq.lock: seq.last_scan_ts = c["timestamp"] if c else ""
+
+        scanned = False
+        max_osc = cfg.get("scan_timeout_osc", 60)
 
         while not _should_stop() and not scanned:
-            with seq.lock: seq.osc_count+=1;osc=seq.osc_count
-            if osc>max_osc: break
-            _set_phase("oscillating",f"C{cycle}: Osc {osc}/{max_osc}")
-            r,_=_step_i(s1s,s1d,1,cfg["osc_forward_steps"],delay)
-            if r=="stopped": break
-            _set_phase("oscillating",f"C{cycle}: Scanning...")
-            t0=time.time()
-            while time.time()-t0<cfg["osc_pause_sec"]:
+            with seq.lock:
+                seq.osc_count += 1; osc = seq.osc_count
+
+            if osc > max_osc:
+                print(f"[SEQ] C{cycle}: Scan timeout after {max_osc} oscillations")
+                break
+
+            # Forward CW
+            _set_phase("oscillating", f"C{cycle}: Osc {osc}/{max_osc} — CW {cfg['osc_forward_steps']}")
+            r, _ = _step_i(s1s, s1d, 1, cfg["osc_forward_steps"], delay)
+            if r == "stopped": break
+
+            # Pause at scan position — check for scan
+            _set_phase("oscillating", f"C{cycle}: Osc {osc}/{max_osc} — scanning...")
+            t0 = time.time()
+            while time.time() - t0 < cfg["osc_pause_sec"]:
                 if _should_stop(): break
-                with current_card_lock: c=current_card["card"]
-                if c and c.get("timestamp","")!=seq.last_scan_ts: scanned=True;break
+                with current_card_lock: c = current_card["card"]
+                if c and c.get("timestamp", "") != seq.last_scan_ts:
+                    scanned = True; break
                 time.sleep(0.05)
             if _should_stop() or scanned: break
-            r,_=_beam_i(s1s,s1d,beam0,-1,delay)
-            if r=="stopped": break
-            if r=="max_steps":
-                with seq.lock: seq.error=f"C{cycle}: Lost beam0"; break
+
+            # Return CCW to beam0
+            _set_phase("oscillating", f"C{cycle}: Osc {osc}/{max_osc} — returning to beam0")
+            r, _ = _beam_i(s1s, s1d, beam0, -1, delay)
+            if r == "stopped": break
+            if r == "max_steps":
+                with seq.lock: seq.error = f"C{cycle}: Lost beam0 during oscillation"
+                break
 
         if _should_stop(): break
+
+        # Scan timeout — eject card to error pile
         if not scanned:
-            _set_phase("error_eject",f"C{cycle}: Scan timeout")
-            _single_passthrough_i(s1s,s1d,-1,beam0,delay)
-            with seq.lock: seq.error=f"C{cycle}: Unable to scan";seq.cycle_count=cycle
-            time.sleep(0.2); continue
+            _set_phase("error_eject", f"C{cycle}: Scan timeout — ejecting to error pile")
+            with seq.lock: seq.error = f"C{cycle}: Unable to scan card"
 
-        with current_card_lock: card=current_card["card"]
-        with seq.lock: seq.last_scan_ts=card["timestamp"] if card else ""
-        cn=card["name"] if card else "?";pile=card.get("pile",0) if card else 0
-        ap=pile
-        if pile==0: ap=error_pile
+            # Reverse S1 CCW until card passes through beam0 (blocked then unblocked)
+            r, _ = _single_passthrough_i(s1s, s1d, -1, beam0, delay)
+            if r == "stopped": break
 
-        # 3. ROUTE
-        if ap==0:
-            _set_phase("error_eject",f"C{cycle}: No match → error")
-            with seq.lock: seq.error=f"C{cycle}: No match for '{cn}'";seq.last_error_card=card
-            _single_passthrough_i(s1s,s1d,-1,beam0,delay)
-        elif ap==1:
-            pc=piles.get(1,{});bn=pc.get("beam","beam1");bp=PINS.get(bn)
-            is_dummy=pc.get("dummy",False)
-            _set_phase("ejecting",f"C{cycle}: → Pile 1")
-            if is_dummy:
-                r,_=_dual_passthrough_i(s1s,s1d,1,s2s,s2d,1,bp,delay)
-                if r=="stopped": break
-            else:
-                r,_=_dual_beam_i(s1s,s1d,1,s2s,s2d,1,bp,delay)
-                if r=="stopped": break
-                if r=="max_steps":
-                    with seq.lock: seq.error=f"C{cycle}: Pile 1 beam miss"; break
-                sh=cfg.get("pile1_shuffle_steps",300)
-                _dual_i(s1s,s1d,-1,s2s,s2d,-1,sh,delay)
-                _dual_i(s1s,s1d,1,s2s,s2d,1,sh,delay)
-        else:
-            pc=piles.get(ap)
-            if not pc:
-                with seq.lock: seq.error=f"C{cycle}: No config pile {ap}"
-                _single_passthrough_i(s1s,s1d,-1,beam0,delay)
-                with seq.lock: seq.cycle_count=cycle; continue
+            with seq.lock: seq.cycle_count = cycle
+            time.sleep(0.2)
+            continue  # next card
 
-            bn=pc.get("beam","beam1");bp=PINS.get(bn)
-            is_dummy=pc.get("dummy",False)
+        # ══════════════════════════════════════════════════════════════
+        # 3. ROUTE — Send card to the correct pile
+        # ══════════════════════════════════════════════════════════════
+        with current_card_lock: card = current_card["card"]
+        with seq.lock: seq.last_scan_ts = card["timestamp"] if card else ""
+        cn = card["name"] if card else "?"
+        pile = card.get("pile", 0) if card else 0
+
+        # Apply error pile mapping
+        actual_pile = pile
+        if pile == 0:
+            actual_pile = error_pile  # might still be 0
+
+        print(f"[SEQ] C{cycle}: Scanned '{cn}' → Pile {pile}" +
+              (f" (mapped to error pile {actual_pile})" if pile == 0 and error_pile else ""))
+
+        # ── PILE 0: No matching condition ──────────────────────────
+        if actual_pile == 0:
+            _set_phase("error_eject", f"C{cycle}: Pile 0 — no match for '{cn}'")
+            with seq.lock:
+                seq.error = f"C{cycle}: No matching condition for '{cn}'"
+                seq.last_error_card = card
+
+            # S1 CCW until card passes back through beam0
+            r, _ = _single_passthrough_i(s1s, s1d, -1, beam0, delay)
+            if r == "stopped": break
+
+        # ── PILE 1: Special shuffle pile ───────────────────────────
+        elif actual_pile == 1:
+            pc = piles.get(1, {})
+            bn = pc.get("beam", "beam1"); bp = PINS.get(bn)
+            is_dummy = pc.get("dummy", False)
+
             if bp is None:
-                with seq.lock: seq.error=f"C{cycle}: Beam '{bn}' missing"; break
+                with seq.lock: seq.error = f"C{cycle}: Beam '{bn}' not in PINS"
+                break
+
+            _set_phase("ejecting", f"C{cycle}: → Pile 1" + (" (dummy)" if is_dummy else ""))
 
             if is_dummy:
-                # Dummy pile: no servo, just passthrough
-                _set_phase("ejecting",f"C{cycle}: → Pile {ap} (dummy)")
-                r,_=_dual_passthrough_i(s1s,s1d,1,s2s,s2d,1,bp,delay)
-                if r=="stopped": break
-                extra=cfg.get("eject_extra_steps",100)
-                if extra>0: _dual_i(s1s,s1d,1,s2s,s2d,1,extra,delay)
+                # Dummy: just passthrough beam
+                r, _ = _dual_passthrough_i(s1s, s1d, 1, s2s, s2d, 1, bp, delay)
+                if r == "stopped": break
+                if r == "max_steps":
+                    with seq.lock: seq.error = f"C{cycle}: Pile 1 beam never triggered"
+                    break
             else:
-                # Servo pile
-                sc=pc.get("servo_ch",15);su=pc.get("servo_up",90);sd_a=pc.get("servo_down",0)
-                _set_phase("ejecting",f"C{cycle}: → Pile {ap} servo UP")
-                set_servo_angle(sc,su,hold=True);time.sleep(0.3)
-                r,_=_dual_passthrough_i(s1s,s1d,1,s2s,s2d,1,bp,delay)
-                if r=="stopped": set_servo_angle(sc,sd_a);break
-                if r=="max_steps": set_servo_angle(sc,sd_a);seq.error=f"C{cycle}: Beam miss";break
-                extra=cfg.get("eject_extra_steps",100)
-                if extra>0:
-                    r2,_=_dual_i(s1s,s1d,1,s2s,s2d,1,extra,delay)
-                    if r2=="stopped": set_servo_angle(sc,sd_a);break
-                set_servo_angle(sc,sd_a)
+                # Normal pile 1: run to beam, then shuffle
+                r, _ = _dual_beam_i(s1s, s1d, 1, s2s, s2d, 1, bp, delay)
+                if r == "stopped": break
+                if r == "max_steps":
+                    with seq.lock: seq.error = f"C{cycle}: Pile 1 beam miss"
+                    break
 
-        with seq.lock: seq.cycle_count=cycle
+                sh = cfg.get("pile1_shuffle_steps", 300)
+                _set_phase("ejecting", f"C{cycle}: → Pile 1 — shuffle {sh}")
+                r, _ = _dual_i(s1s, s1d, -1, s2s, s2d, -1, sh, delay)
+                if r == "stopped": break
+                r, _ = _dual_i(s1s, s1d, 1, s2s, s2d, 1, sh, delay)
+                if r == "stopped": break
+
+        # ── PILE N (>1): Servo or dummy ────────────────────────────
+        else:
+            pc = piles.get(actual_pile)
+            if not pc:
+                with seq.lock: seq.error = f"C{cycle}: No hardware config for pile {actual_pile}"
+                # Reverse to error
+                _set_phase("error_eject", f"C{cycle}: Pile {actual_pile} unconfigured → error")
+                r, _ = _single_passthrough_i(s1s, s1d, -1, beam0, delay)
+                if r == "stopped": break
+                with seq.lock: seq.cycle_count = cycle
+                continue
+
+            bn = pc.get("beam", "beam1"); bp = PINS.get(bn)
+            is_dummy = pc.get("dummy", False)
+
+            if bp is None:
+                with seq.lock: seq.error = f"C{cycle}: Beam '{bn}' not in PINS"
+                break
+
+            if is_dummy:
+                # ── Dummy pile: S1+S2 CW until beam passthrough, no servo ──
+                _set_phase("ejecting", f"C{cycle}: → Pile {actual_pile} (dummy) → {bn}")
+                r, _ = _dual_passthrough_i(s1s, s1d, 1, s2s, s2d, 1, bp, delay)
+                if r == "stopped": break
+                if r == "max_steps":
+                    with seq.lock: seq.error = f"C{cycle}: Dummy pile {actual_pile} beam never triggered"
+                    break
+                extra = cfg.get("eject_extra_steps", 100)
+                if extra > 0:
+                    r, _ = _dual_i(s1s, s1d, 1, s2s, s2d, 1, extra, delay)
+                    if r == "stopped": break
+            else:
+                # ── Servo pile: flip up, S1+S2 CW passthrough, flip down ──
+                sc = pc.get("servo_ch", 15)
+                su = pc.get("servo_up", 90)
+                sd_a = pc.get("servo_down", 0)
+
+                _set_phase("ejecting", f"C{cycle}: → Pile {actual_pile} — servo {sc} UP")
+                set_servo_angle(sc, su, hold=True)
+                time.sleep(0.3)
+
+                _set_phase("ejecting", f"C{cycle}: → Pile {actual_pile} — S1+S2 CW → {bn}")
+                r, _ = _dual_passthrough_i(s1s, s1d, 1, s2s, s2d, 1, bp, delay)
+                if r == "stopped":
+                    set_servo_angle(sc, sd_a); break
+                if r == "max_steps":
+                    set_servo_angle(sc, sd_a)
+                    with seq.lock: seq.error = f"C{cycle}: Pile {actual_pile} beam never triggered"
+                    break
+
+                extra = cfg.get("eject_extra_steps", 100)
+                if extra > 0:
+                    r, _ = _dual_i(s1s, s1d, 1, s2s, s2d, 1, extra, delay)
+                    if r == "stopped":
+                        set_servo_angle(sc, sd_a); break
+
+                # Flip servo down (auto-releases)
+                set_servo_angle(sc, sd_a)
+
+        print(f"[SEQ] C{cycle}: Complete → pile {actual_pile}")
+        with seq.lock: seq.cycle_count = cycle
         time.sleep(0.1)
 
+    # ══════════════════════════════════════════════════════════════
+    # Cleanup
+    # ══════════════════════════════════════════════════════════════
     with seq.lock:
-        seq.running=False
-        if seq.stop_requested: seq.status_msg=f"Stopped after {seq.cycle_count} cards"
-        elif not seq.error: seq.status_msg=f"Done: {seq.cycle_count} cards"
-        seq.phase="idle"
-    for pn,pc in get_pile_config().items():
-        if not pc.get("dummy",False): set_servo_angle(pc["servo_ch"],pc.get("servo_down",0))
+        seq.running = False
+        if seq.stop_requested:
+            seq.status_msg = f"Stopped after {seq.cycle_count} cards"
+        elif not seq.error:
+            seq.status_msg = f"Done: {seq.cycle_count} cards sorted"
+        seq.phase = "idle"
+
+    # All servos down on exit
+    for pn, pc in get_pile_config().items():
+        if not pc.get("dummy", False):
+            set_servo_angle(pc["servo_ch"], pc.get("servo_down", 0))
+
+    print(f"[SEQ] ═══ Loop ended: {seq.cycle_count} cards ═══")
 
 # --- FLASK ---
 app=Flask(__name__,template_folder=os.path.join(os.path.dirname(os.path.abspath(__file__)),"templates"))
@@ -534,8 +733,9 @@ def handle_webhook():
         cards=data.get("cards",[])
         if not cards: return add_cors(jsonify({"status":"no cards"})),200
         enriched=enrich_card(cards[0])
-        pile=evaluate_rules(enriched,load_rules())
-        entry={**enriched,"timestamp":datetime.now().isoformat(),"pile":pile}
+        ep=get_error_pile()
+        pile,diag=evaluate_rules(enriched,load_rules(),ep)
+        entry={**enriched,"timestamp":datetime.now().isoformat(),"pile":pile,"diagnostics":diag}
         with scan_log_lock: scan_log.append(entry)
         with current_card_lock: current_card["card"]=entry
         print(f"[WEBHOOK] ✓ {entry['name']} → Pile {pile}")
@@ -612,7 +812,7 @@ def sim_beam():
     return jsonify({"ok":True})
 @app.route("/api/sim/scan",methods=["POST"])
 def sim_scan():
-    """Test the sorting algorithm with a Scryfall card. Works in both sim and live mode."""
+    """Test the sorting algorithm with a Scryfall card. Works in both modes."""
     b=request.json or {}
     sid=b.get("scryfallId","")
     if not sid: return jsonify({"ok":False,"error":"No scryfallId provided"}),400
@@ -621,8 +821,9 @@ def sim_scan():
     enriched=enrich_card(fake)
     if not enriched.get("name"):
         return jsonify({"ok":False,"error":"Scryfall lookup failed — check internet connection"}),400
-    pile=evaluate_rules(enriched,load_rules())
-    entry={**enriched,"timestamp":datetime.now().isoformat(),"pile":pile}
+    ep=get_error_pile()
+    pile,diag=evaluate_rules(enriched,load_rules(),ep)
+    entry={**enriched,"timestamp":datetime.now().isoformat(),"pile":pile,"diagnostics":diag}
     with scan_log_lock: scan_log.append(entry)
     with current_card_lock: current_card["card"]=entry
     return jsonify({"ok":True,"card":entry})
