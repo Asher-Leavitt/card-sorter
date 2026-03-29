@@ -60,8 +60,8 @@ def get_servo_angle(ch):
 
 # --- HARDWARE CONFIG ---
 PINS = {
-    "stepper1_step": 22, "stepper1_dir": 23,
-    "stepper2_step": 17, "stepper2_dir": 27,
+    "stepper1_step": 22, "stepper1_dir": 23, "stepper1_en": 24,
+    "stepper2_step": 17, "stepper2_dir": 27, "stepper2_en": 25,
     "beam0": 10, "beam1": 9,
 }
 
@@ -73,23 +73,37 @@ PILES = {
 ERROR_PILE = 0
 SORT_CONFIG = {
     "home_timeout_sec":20,
-    "osc_forward_steps":800,   # steps CW toward scan zone — TUNE THIS
+    "osc_forward_steps":800,   # steps CW toward scan zone
     "osc_pause_sec":0.5,       # pause at scan position
-    "scan_timeout_osc":60,     # max oscillations before giving up
-    "eject_extra_steps":100,"pile1_eject_steps":4000,
-    "step_delay":0.001,
+    "scan_timeout_osc":5,      # max oscillations before error
+    "eject_extra_steps":100,"pile1_eject_steps":5000,
+    "home_delay":0.001,        # step delay during homing
+    "osc_delay":0.001,         # step delay during oscillation/scanning
+    "sort_delay":0.001,        # step delay during card routing
 }
 
 GPIO.setmode(GPIO.BCM)
 if not SIMULATED: GPIO.setwarnings(False)
 for n,p in PINS.items():
-    if "step" in n or "dir" in n: GPIO.setup(p,GPIO.OUT)
+    if "step" in n or "dir" in n or "en" in n: GPIO.setup(p,GPIO.OUT)
     elif "beam" in n: GPIO.setup(p,GPIO.IN,pull_up_down=GPIO.PUD_UP)
 if SIMULATED:
     for n,p in PINS.items():
         if "beam" in n: GPIO.sim_set_beam(p,False)
 for pn,pc in PILES.items():
     if not pc.get("dummy",False): set_servo_angle(pc["servo_ch"],180)
+
+# TMC2208 ENABLE: LOW=enabled, HIGH=disabled (motor free, no heat)
+def motors_enable():
+    for n,p in PINS.items():
+        if "en" in n: GPIO.output(p, GPIO.LOW)
+
+def motors_disable():
+    for n,p in PINS.items():
+        if "en" in n: GPIO.output(p, GPIO.HIGH)
+
+# Start with motors disabled to reduce heat at idle
+motors_disable()
 
 # --- STEPPER HELPERS ---
 def step_motor(sp,dp,d,steps=1,delay=0.001):
@@ -224,6 +238,7 @@ def enrich_card(dc):
 # --- STATE ---
 scan_log=[];scan_log_lock=threading.Lock()
 current_card={"card":None};current_card_lock=threading.Lock()
+scan_gate={"open":True};scan_gate_lock=threading.Lock()
 
 # --- RULES ---
 RULES_FILE=os.path.join(os.path.dirname(os.path.abspath(__file__)),"rules.json")
@@ -293,18 +308,40 @@ def _diagnose_pile(card, crit):
         has_criteria = True
         card_c = [c.upper() for c in card.get("color_identity", [])]
         mode = cc.get("mode", "including")
+        card_is_colorless = len(card_c) == 0
+        wants_colorless = "C" in sel
+        real_sel = [c for c in sel if c != "C"]
         card_str = "".join(card_c) or "colorless"
         sel_str = "".join(sel)
+
         if mode == "exactly":
-            ok = sorted(card_c) == sorted(sel)
+            # Card matches if: (colorless and C selected) OR (colors exactly match real_sel)
+            if wants_colorless and not real_sel:
+                ok = card_is_colorless
+            elif wants_colorless:
+                ok = card_is_colorless or sorted(card_c) == sorted(real_sel)
+            else:
+                ok = sorted(card_c) == sorted(sel)
             checks.append({"field": "colors", "pass": ok,
                 "detail": f"Card {card_str}, need exactly {sel_str}" + (" ✓" if ok else " ✗")})
         elif mode == "including":
-            ok = all(c in card_c for c in sel)
+            # Card matches if: (colorless and C selected) OR (includes all real_sel)
+            if wants_colorless and not real_sel:
+                ok = card_is_colorless
+            elif wants_colorless:
+                ok = card_is_colorless or all(c in card_c for c in real_sel)
+            else:
+                ok = all(c in card_c for c in sel)
             checks.append({"field": "colors", "pass": ok,
                 "detail": f"Card {card_str}, need including {sel_str}" + (" ✓" if ok else " ✗")})
         elif mode == "at_most":
-            ok = all(c in sel for c in card_c)
+            # Card matches if: (colorless and C selected) OR (colors subset of real_sel)
+            if wants_colorless and card_is_colorless:
+                ok = True
+            elif real_sel:
+                ok = all(c in real_sel for c in card_c)
+            else:
+                ok = card_is_colorless
             checks.append({"field": "colors", "pass": ok,
                 "detail": f"Card {card_str}, at most {sel_str}" + (" ✓" if ok else " ✗")})
 
@@ -474,31 +511,30 @@ def continuous_sort_loop():
     except Exception as e:
         print(f"[SEQ] !!!! CRASH: {e}")
         traceback.print_exc()
+        motors_disable()
         with seq.lock:
             seq.error = f"CRASH: {e}"
             seq.running = False
             seq.phase = "idle"
             seq.status_msg = f"Crashed: {e}"
+        with scan_gate_lock: scan_gate['open'] = True
 
 def _sort_loop_inner():
-    """
-    Full sorting cycle:
-      1. HOME: S1 CCW until beam0 (20s timeout → intake error, stop)
-      2. SCAN: S1 oscillates CW/CCW (800 steps forward, pause, CCW to beam0)
-         - Timeout: S1 CCW until beam0 passthrough → error pile, continue
-      3. ROUTE based on pile number:
-         - Pile 0 (error): S1 CCW until beam0 passthrough, show diagnostics
-         - Pile 1 (special): S1+S2 CW to beam1, then shuffle back/forth
-         - Pile N>1 (servo): servo UP, S1+S2 CW until beam passthrough + extra, servo DOWN
-         - Dummy pile: S1+S2 CW until beam passthrough + extra, no servo
-      4. REPEAT until stop
-    """
     s1s=PINS["stepper1_step"]; s1d=PINS["stepper1_dir"]
     s2s=PINS["stepper2_step"]; s2d=PINS["stepper2_dir"]
     beam0=PINS["beam0"]
 
+    # Find last beam for error pile ejection
+    beam_names = sorted([n for n in PINS if n.startswith("beam")], key=lambda n: int(n.replace("beam","")))
+    last_beam_name = beam_names[-1] if beam_names else "beam0"
+    last_beam_pin = PINS.get(last_beam_name, beam0)
+
+    # Cache rules/settings to avoid disk reads mid-cycle
+    cached_rules = load_rules()
+    cached_settings_ts = time.time()
+
     print(f"[SEQ] ═══ Sort loop starting ═══")
-    print(f"[SEQ] Pins: S1 step={s1s} dir={s1d}, S2 step={s2s} dir={s2d}, beam0={beam0}")
+    print(f"[SEQ] Pins: S1={s1s}/{s1d}, S2={s2s}/{s2d}, beam0={beam0}, error_beam={last_beam_name}={last_beam_pin}")
 
     with seq.lock:
         seq.running=True; seq.stop_requested=False; seq.cycle_count=0
@@ -506,79 +542,104 @@ def _sort_loop_inner():
         with current_card_lock: c=current_card["card"]
         seq.last_scan_ts=c["timestamp"] if c else ""
 
-    cfg = get_sort_config(); delay = cfg["step_delay"]
-    print(f"[SEQ] Config: delay={delay}, osc_fwd={cfg['osc_forward_steps']}, home_timeout={cfg['home_timeout_sec']}s, pile1_eject={cfg['pile1_eject_steps']}")
-
+    cfg = get_sort_config()
+    print(f"[SEQ] Config: home={cfg['home_delay']}, osc={cfg['osc_delay']}, sort={cfg['sort_delay']}, osc_fwd={cfg['osc_forward_steps']}, pile1={cfg['pile1_eject_steps']}")
     print("[SEQ] ═══ Entering main loop ═══")
+
+    def _eject_error(cycle, msg, card=None):
+        """Route card to error pile (last beam passthrough) and continue."""
+        motors_enable()
+        with seq.lock:
+            seq.error = f"C{cycle}: {msg}"
+            if card: seq.last_error_card = card
+        _set_phase("error_eject", f"C{cycle}: {msg} → error pile")
+        print(f"[SEQ] C{cycle}: ERROR EJECT: {msg}")
+        sd = cfg.get("sort_delay", 0.001)
+        r, _ = _dual_passthrough_i(s1s, s1d, 1, s2s, s2d, 1, last_beam_pin, sd)
+        if r == "stopped": return "stopped"
+        if r == "max_steps":
+            r, _ = _dual_i(s1s, s1d, 1, s2s, s2d, 1, 5000, sd)
+            if r == "stopped": return "stopped"
+        extra = cfg.get("eject_extra_steps", 100)
+        if extra > 0:
+            r, _ = _dual_i(s1s, s1d, 1, s2s, s2d, 1, extra, sd)
+            if r == "stopped": return "stopped"
+        return "ok"
 
     while not _should_stop():
         cycle = seq.cycle_count + 1
-        cfg = get_sort_config(); delay = cfg["step_delay"]
-        piles = get_pile_config(); error_pile = get_error_pile()
 
-        # Snapshot scan timestamp NOW — any scan from this point counts
+        # Refresh config/rules every 5 seconds max (avoid disk reads every cycle)
+        if time.time() - cached_settings_ts > 5:
+            cfg = get_sort_config()
+            cached_rules = load_rules()
+            cached_settings_ts = time.time()
+
+        piles = get_pile_config(); error_pile = get_error_pile()
+        hd = cfg.get("home_delay", 0.001)
+        od = cfg.get("osc_delay", 0.001)
+        sd = cfg.get("sort_delay", 0.001)
+
+        # Open scan gate
+        with scan_gate_lock: scan_gate['open'] = True
         with current_card_lock: c = current_card["card"]
         with seq.lock: seq.last_scan_ts = c["timestamp"] if c else ""
 
-        # 1. HOME — S1 CCW to beam0
+        # ── 1. HOME ──────────────────────────────────────────────
+        motors_enable()
         _set_phase("homing", f"C{cycle}: Homing S1 CCW → beam0")
-        timeout_steps = int(cfg["home_timeout_sec"] / (delay * 2))
-        print(f"[SEQ] C{cycle}: Homing — max {timeout_steps} steps, delay={delay}")
+        timeout_steps = int(cfg["home_timeout_sec"] / (hd * 2))
 
-        r, steps = _beam_i(s1s, s1d, beam0, -1, delay=delay, mx=timeout_steps)
-        print(f"[SEQ] C{cycle}: Home result: {r}, steps={steps}")
+        r, steps = _beam_i(s1s, s1d, beam0, -1, delay=hd, mx=timeout_steps)
 
         if r == "stopped": break
         if r == "max_steps":
-            with seq.lock:
-                seq.error = f"C{cycle}: Intake error — beam0 not hit in {cfg['home_timeout_sec']}s"
-            _set_phase("error", seq.error)
-            break
+            er = _eject_error(cycle, f"Intake error — beam0 not hit in {cfg['home_timeout_sec']}s")
+            motors_disable()
+            if er == "stopped": break
+            with seq.lock: seq.cycle_count = cycle
+            continue
 
-        print(f"[SEQ] C{cycle}: Homed after {steps} steps")
+        # ── 2. SCAN ──────────────────────────────────────────────
+        # Motors off while waiting for scan — reduces heat
+        motors_disable()
 
-        # 2. CHECK / OSCILLATE — see if already scanned, else oscillate
-        # Check if Delver already scanned during homing
         scanned = False
         with current_card_lock: c = current_card["card"]
         if c and c.get("timestamp", "") != seq.last_scan_ts:
             scanned = True
-            print(f"[SEQ] C{cycle}: Already scanned during homing!")
+            print(f"[SEQ] C{cycle}: Scanned during homing!")
 
         if not scanned:
-            # Oscillate: CW forward, pause, check, CCW back to beam0, repeat
-            max_osc = cfg.get("scan_timeout_osc", 60)
-            fwd_steps = cfg.get("osc_forward_steps", 800)
-            pause_sec = cfg.get("osc_pause_sec", 0.5)
+            max_osc = cfg.get("scan_timeout_osc", 5)
+            fwd = cfg.get("osc_forward_steps", 800)
+            pause = cfg.get("osc_pause_sec", 0.5)
             with seq.lock: seq.osc_count = 0
 
-            print(f"[SEQ] C{cycle}: Oscillating — {fwd_steps} steps, {pause_sec}s pause, max {max_osc} osc")
+            motors_enable()  # Re-enable for oscillation
 
+            osc_error = None
             while not _should_stop() and not scanned:
                 with seq.lock: seq.osc_count += 1; osc = seq.osc_count
-                if osc > max_osc:
-                    print(f"[SEQ] C{cycle}: Scan timeout after {max_osc} oscillations")
-                    break
+                if osc > max_osc: break
 
-                # CW forward — check for scan every step chunk
-                _set_phase("scanning", f"C{cycle}: Osc {osc}/{max_osc} — CW {fwd_steps}")
-                moved = 0
-                chunk = 50  # check scan every 50 steps
-                while moved < fwd_steps and not _should_stop() and not scanned:
-                    todo = min(chunk, fwd_steps - moved)
-                    r, s = _step_i(s1s, s1d, 1, todo, delay)
+                # CW forward
+                _set_phase("scanning", f"C{cycle}: Osc {osc}/{max_osc} — CW {fwd}")
+                moved = 0; chunk = 50
+                while moved < fwd and not _should_stop() and not scanned:
+                    todo = min(chunk, fwd - moved)
+                    r, s = _step_i(s1s, s1d, 1, todo, od)
                     moved += s
                     if r == "stopped": break
                     with current_card_lock: c = current_card["card"]
                     if c and c.get("timestamp", "") != seq.last_scan_ts:
                         scanned = True
-
                 if _should_stop() or scanned: break
 
-                # Pause at scan position
+                # Pause
                 _set_phase("scanning", f"C{cycle}: Osc {osc}/{max_osc} — scanning...")
                 t0 = time.time()
-                while time.time() - t0 < pause_sec:
+                while time.time() - t0 < pause:
                     if _should_stop(): break
                     with current_card_lock: c = current_card["card"]
                     if c and c.get("timestamp", "") != seq.last_scan_ts:
@@ -588,181 +649,148 @@ def _sort_loop_inner():
 
                 # CCW back to beam0
                 _set_phase("scanning", f"C{cycle}: Osc {osc}/{max_osc} — CCW to beam0")
-                r, _ = _beam_i(s1s, s1d, beam0, -1, delay)
+                r, _ = _beam_i(s1s, s1d, beam0, -1, od)
                 if r == "stopped": break
                 if r == "max_steps":
-                    with seq.lock: seq.error = f"C{cycle}: Lost beam0 during oscillation"
+                    osc_error = "Lost beam0 during oscillation"
                     break
+
+        # Close scan gate
+        with scan_gate_lock: scan_gate['open'] = False
 
         if _should_stop(): break
 
         if not scanned:
-            _set_phase("error_eject", f"C{cycle}: Scan timeout — ejecting")
-            with seq.lock: seq.error = f"C{cycle}: No scan after {cfg.get('scan_timeout_osc',60)} oscillations"
-            r, _ = _single_passthrough_i(s1s, s1d, -1, beam0, delay)
-            if r == "stopped": break
+            msg = osc_error if osc_error else f"No scan after {cfg.get('scan_timeout_osc',5)} oscillations"
+            er = _eject_error(cycle, msg)
+            if er == "stopped": break
             with seq.lock: seq.cycle_count = cycle
-            time.sleep(0.2); continue
+            continue
 
-
-        # ══════════════════════════════════════════════════════════════
-        # 3. ROUTE — Send card to the correct pile
-        # ══════════════════════════════════════════════════════════════
+        # ── 3. ROUTE ─────────────────────────────────────────────
+        motors_enable()
         with current_card_lock: card = current_card["card"]
         with seq.lock: seq.last_scan_ts = card["timestamp"] if card else ""
         cn = card["name"] if card else "?"
         pile = card.get("pile", 0) if card else 0
+        actual_pile = pile if pile != 0 else error_pile
+        print(f"[SEQ] C{cycle}: '{cn}' → pile={pile}, actual={actual_pile}")
 
-        # Apply error pile mapping
-        actual_pile = pile
-        if pile == 0:
-            actual_pile = error_pile  # might still be 0
-
-        print(f"[SEQ] C{cycle}: Scanned '{cn}' → Pile {pile}" +
-              (f" (mapped to error pile {actual_pile})" if pile == 0 and error_pile else ""))
-
-        # ── PILE 0: No matching condition ──────────────────────────
+        # PILE 0 — error
         if actual_pile == 0:
-            _set_phase("error_eject", f"C{cycle}: Pile 0 — no match for '{cn}'")
-            with seq.lock:
-                seq.error = f"C{cycle}: No matching condition for '{cn}'"
-                seq.last_error_card = card
+            er = _eject_error(cycle, f"No matching condition for '{cn}'", card)
+            if er == "stopped": break
 
-            # S1 CCW until card passes back through beam0
-            r, _ = _single_passthrough_i(s1s, s1d, -1, beam0, delay)
-            if r == "stopped": break
-
-        # ── PILE 1: Home → servo up → fixed steps → servo down ─────
+        # PILE 1 — home, servo up, fixed steps, servo down
         elif actual_pile == 1:
             pc = piles.get(1, {})
             sc = pc.get("servo_ch", 15)
-            eject_steps = cfg.get("pile1_eject_steps", 4000)
-            print(f"[SEQ] C{cycle}: PILE 1 — servo ch={sc} up=180 down=0, eject={eject_steps} steps, delay={delay}")
+            eject_steps = cfg.get("pile1_eject_steps", 5000)
+            print(f"[SEQ] C{cycle}: PILE 1 — servo ch={sc}, eject={eject_steps}")
 
-            # 1. Home to beam0
-            _set_phase("ejecting", f"C{cycle}: → Pile 1 — homing to beam0")
-            r, _ = _beam_i(s1s, s1d, beam0, -1, delay)
+            _set_phase("ejecting", f"C{cycle}: → Pile 1 — homing")
+            r, _ = _beam_i(s1s, s1d, beam0, -1, sd)
             if r == "stopped": break
             if r == "max_steps":
-                with seq.lock: seq.error = f"C{cycle}: Pile 1 rehome failed — beam0 not hit"
-                break
+                er = _eject_error(cycle, "Pile 1 rehome failed")
+                if er == "stopped": break
+                with seq.lock: seq.cycle_count = cycle; continue
 
-            # 2. Servo up — always full 180
             _set_phase("ejecting", f"C{cycle}: → Pile 1 — servo UP")
-            set_servo_angle(sc, 0, hold=True)
-            time.sleep(0.3)
+            set_servo_angle(sc, 0, hold=True); time.sleep(0.3)
 
-            # 3. Move fixed steps CW — both steppers
-            _set_phase("ejecting", f"C{cycle}: → Pile 1 — S1+S2 CW {eject_steps} steps")
-            print(f"[SEQ] C{cycle}: Starting {eject_steps} dual steps...")
-            r, moved = _dual_i(s1s, s1d, 1, s2s, s2d, 1, eject_steps, delay)
-            print(f"[SEQ] C{cycle}: Dual move result={r}, moved={moved}")
-            if r == "stopped":
-                set_servo_angle(sc, 180); break
+            _set_phase("ejecting", f"C{cycle}: → Pile 1 — {eject_steps} steps")
+            r, moved = _dual_i(s1s, s1d, 1, s2s, s2d, 1, eject_steps, sd)
+            print(f"[SEQ] C{cycle}: Pile 1 moved={moved}")
+            if r == "stopped": set_servo_angle(sc, 180); break
 
-            # 4. Servo down — always 0
             set_servo_angle(sc, 180)
-            print(f"[SEQ] C{cycle}: Pile 1 complete")
 
-        # ── PILE N (>1) ────────────────────────────────────────────
+        # PILE N (>1)
         else:
             pc = piles.get(actual_pile)
-            # Check if rules mark this as a dummy pile
-            pile_rules = load_rules().get(str(actual_pile), {})
+            pile_rules = cached_rules.get(str(actual_pile), {})
             is_rules_dummy = pile_rules.get("dummy", False)
 
             if not pc and is_rules_dummy:
-                # ── Dummy pile — run to last beam break passthrough ──
-                # Find the highest-numbered beam in PINS
-                beam_names = sorted([n for n in PINS if n.startswith("beam")], key=lambda n: int(n.replace("beam","")))
-                last_beam_name = beam_names[-1] if beam_names else None
-                last_beam_pin = PINS.get(last_beam_name) if last_beam_name else None
-
-                if last_beam_pin is None:
-                    with seq.lock: seq.error = f"C{cycle}: No beam breaks configured for dummy pile"
-                    break
-
-                _set_phase("ejecting", f"C{cycle}: → Pile {actual_pile} (dummy) → {last_beam_name} passthrough")
-                print(f"[SEQ] C{cycle}: Dummy pile {actual_pile} — S1+S2 CW until {last_beam_name} (pin {last_beam_pin}) passthrough")
-                r, _ = _dual_passthrough_i(s1s, s1d, 1, s2s, s2d, 1, last_beam_pin, delay)
+                # Dummy, no hardware — last beam passthrough
+                _set_phase("ejecting", f"C{cycle}: → Pile {actual_pile} (dummy)")
+                r, _ = _dual_passthrough_i(s1s, s1d, 1, s2s, s2d, 1, last_beam_pin, sd)
                 if r == "stopped": break
                 if r == "max_steps":
-                    with seq.lock: seq.error = f"C{cycle}: Dummy pile — {last_beam_name} never triggered"
-                    break
-                # Extra steps to clear the card past the beam
+                    er = _eject_error(cycle, f"Dummy pile {actual_pile} beam never triggered")
+                    if er == "stopped": break
+                    with seq.lock: seq.cycle_count = cycle; continue
                 extra = cfg.get("eject_extra_steps", 100)
                 if extra > 0:
-                    r, _ = _dual_i(s1s, s1d, 1, s2s, s2d, 1, extra, delay)
+                    r, _ = _dual_i(s1s, s1d, 1, s2s, s2d, 1, extra, sd)
                     if r == "stopped": break
 
             elif not pc:
-                # No hardware config and not dummy — error
-                with seq.lock: seq.error = f"C{cycle}: No hardware config for pile {actual_pile}"
-                _set_phase("error_eject", f"C{cycle}: Pile {actual_pile} unconfigured → error")
-                r, _ = _single_passthrough_i(s1s, s1d, -1, beam0, delay)
-                if r == "stopped": break
-                with seq.lock: seq.cycle_count = cycle
-                continue
+                er = _eject_error(cycle, f"No hardware config for pile {actual_pile}")
+                if er == "stopped": break
+                with seq.lock: seq.cycle_count = cycle; continue
 
             elif pc.get("dummy", False):
-                # ── Dummy pile with beam break ──
                 bn = pc.get("beam", "beam1"); bp = PINS.get(bn)
                 if bp is None:
-                    with seq.lock: seq.error = f"C{cycle}: Beam '{bn}' not in PINS"; break
+                    er = _eject_error(cycle, f"Beam '{bn}' not in PINS")
+                    if er == "stopped": break
+                    with seq.lock: seq.cycle_count = cycle; continue
                 _set_phase("ejecting", f"C{cycle}: → Pile {actual_pile} (dummy) → {bn}")
-                r, _ = _dual_passthrough_i(s1s, s1d, 1, s2s, s2d, 1, bp, delay)
+                r, _ = _dual_passthrough_i(s1s, s1d, 1, s2s, s2d, 1, bp, sd)
                 if r == "stopped": break
                 if r == "max_steps":
-                    with seq.lock: seq.error = f"C{cycle}: Pile {actual_pile} beam never triggered"; break
+                    er = _eject_error(cycle, f"Pile {actual_pile} beam never triggered")
+                    if er == "stopped": break
+                    with seq.lock: seq.cycle_count = cycle; continue
                 extra = cfg.get("eject_extra_steps", 100)
                 if extra > 0:
-                    r, _ = _dual_i(s1s, s1d, 1, s2s, s2d, 1, extra, delay)
+                    r, _ = _dual_i(s1s, s1d, 1, s2s, s2d, 1, extra, sd)
                     if r == "stopped": break
 
             else:
-                # ── Servo pile — always 0/180 ──
                 bn = pc.get("beam", "beam1"); bp = PINS.get(bn)
                 sc = pc.get("servo_ch", 15)
                 if bp is None:
-                    with seq.lock: seq.error = f"C{cycle}: Beam '{bn}' not in PINS"; break
+                    er = _eject_error(cycle, f"Beam '{bn}' not in PINS")
+                    if er == "stopped": break
+                    with seq.lock: seq.cycle_count = cycle; continue
 
                 _set_phase("ejecting", f"C{cycle}: → Pile {actual_pile} — servo UP")
                 set_servo_angle(sc, 0, hold=True); time.sleep(0.3)
 
-                _set_phase("ejecting", f"C{cycle}: → Pile {actual_pile} — S1+S2 CW → {bn}")
-                r, _ = _dual_passthrough_i(s1s, s1d, 1, s2s, s2d, 1, bp, delay)
+                r, _ = _dual_passthrough_i(s1s, s1d, 1, s2s, s2d, 1, bp, sd)
                 if r == "stopped": set_servo_angle(sc, 180); break
                 if r == "max_steps":
                     set_servo_angle(sc, 180)
-                    with seq.lock: seq.error = f"C{cycle}: Pile {actual_pile} beam never triggered"; break
+                    er = _eject_error(cycle, f"Pile {actual_pile} beam never triggered")
+                    if er == "stopped": break
+                    with seq.lock: seq.cycle_count = cycle; continue
 
                 extra = cfg.get("eject_extra_steps", 100)
                 if extra > 0:
-                    r, _ = _dual_i(s1s, s1d, 1, s2s, s2d, 1, extra, delay)
+                    r, _ = _dual_i(s1s, s1d, 1, s2s, s2d, 1, extra, sd)
                     if r == "stopped": set_servo_angle(sc, 180); break
 
                 set_servo_angle(sc, 180)
 
         print(f"[SEQ] C{cycle}: Complete → pile {actual_pile}")
+        motors_disable()
         with seq.lock: seq.cycle_count = cycle
-        time.sleep(0.1)
 
-    # ══════════════════════════════════════════════════════════════
     # Cleanup
-    # ══════════════════════════════════════════════════════════════
+    motors_disable()
     with seq.lock:
         seq.running = False
-        if seq.stop_requested:
-            seq.status_msg = f"Stopped after {seq.cycle_count} cards"
-        elif not seq.error:
-            seq.status_msg = f"Done: {seq.cycle_count} cards sorted"
+        if seq.stop_requested: seq.status_msg = f"Stopped after {seq.cycle_count} cards"
+        elif not seq.error: seq.status_msg = f"Done: {seq.cycle_count} cards sorted"
         seq.phase = "idle"
 
-    # All servos down on exit
     for pn, pc in get_pile_config().items():
-        if not pc.get("dummy", False):
-            set_servo_angle(pc["servo_ch"], 180)
+        if not pc.get("dummy", False): set_servo_angle(pc["servo_ch"], 180)
 
+    with scan_gate_lock: scan_gate['open'] = True
     print(f"[SEQ] ═══ Loop ended: {seq.cycle_count} cards ═══")
 
 # --- FLASK ---
@@ -778,6 +806,11 @@ def handle_webhook():
     if request.method=="OPTIONS": return add_cors(jsonify({"ok":1})),200
     data=request.json or {};et=data.get("type","")
     if et=="card_scanned":
+        # Ignore scans while sorting — only accept during scan phase
+        with scan_gate_lock:
+            if not scan_gate['open']:
+                print(f"[WEBHOOK] ✗ Scan ignored (sorting in progress)")
+                return add_cors(jsonify({"status":"ignored","reason":"sorting"})),200
         cards=data.get("cards",[])
         if not cards: return add_cors(jsonify({"status":"no cards"})),200
         enriched=enrich_card(cards[0])
@@ -820,13 +853,21 @@ def api_status():
 @app.route("/api/motor/step",methods=["POST"])
 def motor_step_api():
     b=request.json or {};s=b.get("stepper",1)
-    try: return jsonify({"ok":True,"steps_taken":step_motor(PINS[f"stepper{s}_step"],PINS[f"stepper{s}_dir"],b.get("direction",1),b.get("steps",200),b.get("delay",0.001))})
-    except Exception as e: return jsonify({"ok":False,"error":str(e)}),500
+    try:
+        motors_enable()
+        r=step_motor(PINS[f"stepper{s}_step"],PINS[f"stepper{s}_dir"],b.get("direction",1),b.get("steps",200),b.get("delay",0.001))
+        motors_disable()
+        return jsonify({"ok":True,"steps_taken":r})
+    except Exception as e: motors_disable();return jsonify({"ok":False,"error":str(e)}),500
 @app.route("/api/motor/dual",methods=["POST"])
 def motor_dual_api():
     b=request.json or {}
-    try: return jsonify({"ok":True,"steps_taken":step_dual(PINS["stepper1_step"],PINS["stepper1_dir"],b.get("s1_dir",1),PINS["stepper2_step"],PINS["stepper2_dir"],b.get("s2_dir",-1),b.get("steps",200),b.get("delay",0.001))})
-    except Exception as e: return jsonify({"ok":False,"error":str(e)}),500
+    try:
+        motors_enable()
+        r=step_dual(PINS["stepper1_step"],PINS["stepper1_dir"],b.get("s1_dir",1),PINS["stepper2_step"],PINS["stepper2_dir"],b.get("s2_dir",-1),b.get("steps",200),b.get("delay",0.001))
+        motors_disable()
+        return jsonify({"ok":True,"steps_taken":r})
+    except Exception as e: motors_disable();return jsonify({"ok":False,"error":str(e)}),500
 @app.route("/api/servo/set",methods=["POST"])
 def servo_set():
     b=request.json or {};ch=b.get("channel",15);a=b.get("angle",90)

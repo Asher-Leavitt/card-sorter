@@ -140,6 +140,62 @@ input[type=range]::-webkit-slider-thumb{-webkit-appearance:none;width:12px;heigh
     <div id="pb-ejecting" style="flex:1;height:4px;border-radius:2px;background:var(--sf3)"></div>
     <div id="pb-error_eject" style="flex:1;height:4px;border-radius:2px;background:var(--sf3)"></div>
   </div>
+
+  <div class="box" style="margin-top:6px">
+    <div class="box-title">SORT TUNING <span style="font-weight:400;color:var(--txd)">(live — changes apply next cycle)</span></div>
+    <div class="srow" style="margin-top:0">
+      <label style="min-width:70px">Home Spd</label>
+      <input type="range" id="cfgHomeDelay" min="5" max="40" value="10" step="1"
+        oninput="document.getElementById('cfgHomeDelayV').textContent=(this.value/10).toFixed(1)+'ms'">
+      <span class="sv" id="cfgHomeDelayV">1.0ms</span>
+    </div>
+    <div class="srow">
+      <label style="min-width:70px">Osc Spd</label>
+      <input type="range" id="cfgOscDelay" min="5" max="40" value="10" step="1"
+        oninput="document.getElementById('cfgOscDelayV').textContent=(this.value/10).toFixed(1)+'ms'">
+      <span class="sv" id="cfgOscDelayV">1.0ms</span>
+    </div>
+    <div class="srow">
+      <label style="min-width:70px">Sort Spd</label>
+      <input type="range" id="cfgSortDelay" min="5" max="40" value="10" step="1"
+        oninput="document.getElementById('cfgSortDelayV').textContent=(this.value/10).toFixed(1)+'ms'">
+      <span class="sv" id="cfgSortDelayV">1.0ms</span>
+    </div>
+    <div class="srow">
+      <label style="min-width:70px">Osc Steps</label>
+      <input type="range" id="cfgOscFwd" min="100" max="3000" value="800" step="50"
+        oninput="document.getElementById('cfgOscFwdV').textContent=this.value">
+      <span class="sv" id="cfgOscFwdV">800</span>
+    </div>
+    <div class="srow">
+      <label style="min-width:70px">Osc Pause</label>
+      <input type="range" id="cfgOscPause" min="1" max="30" value="5" step="1"
+        oninput="document.getElementById('cfgOscPauseV').textContent=(this.value/10).toFixed(1)+'s'">
+      <span class="sv" id="cfgOscPauseV">0.5s</span>
+    </div>
+    <div class="srow">
+      <label style="min-width:70px">Max Osc</label>
+      <input type="range" id="cfgMaxOsc" min="1" max="30" value="5" step="1"
+        oninput="document.getElementById('cfgMaxOscV').textContent=this.value">
+      <span class="sv" id="cfgMaxOscV">5</span>
+    </div>
+    <div class="srow">
+      <label style="min-width:70px">P1 Eject</label>
+      <input type="range" id="cfgP1Eject" min="500" max="10000" value="5000" step="100"
+        oninput="document.getElementById('cfgP1EjectV').textContent=this.value">
+      <span class="sv" id="cfgP1EjectV">5000</span>
+    </div>
+    <div class="srow">
+      <label style="min-width:70px">Extra Steps</label>
+      <input type="range" id="cfgExtra" min="0" max="500" value="100" step="10"
+        oninput="document.getElementById('cfgExtraV').textContent=this.value">
+      <span class="sv" id="cfgExtraV">100</span>
+    </div>
+    <div class="br" style="margin-top:5px">
+      <button class="btn sm g" onclick="saveSortConfig()">💾 Save Tuning</button>
+      <span id="cfgSaveMsg" style="font-family:var(--mono);font-size:9px;color:var(--g);display:none">✓ Saved</span>
+    </div>
+  </div>
 </div>
 
 <!-- Hardware -->
@@ -272,6 +328,56 @@ function saveErrorPile(){
   });
 }
 
+// Sort tuning
+function loadSortConfig(){
+  api('/api/settings').then(s=>{
+    const c=s.sort_config||{};
+    // Home speed
+    const homeMs=Math.round((c.home_delay||0.001)*10000);
+    document.getElementById('cfgHomeDelay').value=homeMs;
+    document.getElementById('cfgHomeDelayV').textContent=(homeMs/10).toFixed(1)+'ms';
+    // Osc speed
+    const oscMs=Math.round((c.osc_delay||0.001)*10000);
+    document.getElementById('cfgOscDelay').value=oscMs;
+    document.getElementById('cfgOscDelayV').textContent=(oscMs/10).toFixed(1)+'ms';
+    // Sort speed
+    const sortMs=Math.round((c.sort_delay||0.001)*10000);
+    document.getElementById('cfgSortDelay').value=sortMs;
+    document.getElementById('cfgSortDelayV').textContent=(sortMs/10).toFixed(1)+'ms';
+    // Other config
+    document.getElementById('cfgOscFwd').value=c.osc_forward_steps||800;
+    document.getElementById('cfgOscFwdV').textContent=c.osc_forward_steps||800;
+    const pauseTenths=Math.round((c.osc_pause_sec||0.5)*10);
+    document.getElementById('cfgOscPause').value=pauseTenths;
+    document.getElementById('cfgOscPauseV').textContent=(pauseTenths/10).toFixed(1)+'s';
+    document.getElementById('cfgMaxOsc').value=c.scan_timeout_osc||5;
+    document.getElementById('cfgMaxOscV').textContent=c.scan_timeout_osc||5;
+    document.getElementById('cfgP1Eject').value=c.pile1_eject_steps||5000;
+    document.getElementById('cfgP1EjectV').textContent=c.pile1_eject_steps||5000;
+    document.getElementById('cfgExtra').value=c.eject_extra_steps||100;
+    document.getElementById('cfgExtraV').textContent=c.eject_extra_steps||100;
+  });
+}
+function saveSortConfig(){
+  api('/api/settings').then(s=>{
+    if(!s.sort_config) s.sort_config={};
+    s.sort_config.home_delay=parseInt(document.getElementById('cfgHomeDelay').value)/10000;
+    s.sort_config.osc_delay=parseInt(document.getElementById('cfgOscDelay').value)/10000;
+    s.sort_config.sort_delay=parseInt(document.getElementById('cfgSortDelay').value)/10000;
+    s.sort_config.osc_forward_steps=parseInt(document.getElementById('cfgOscFwd').value);
+    s.sort_config.osc_pause_sec=parseInt(document.getElementById('cfgOscPause').value)/10;
+    s.sort_config.scan_timeout_osc=parseInt(document.getElementById('cfgMaxOsc').value);
+    s.sort_config.pile1_eject_steps=parseInt(document.getElementById('cfgP1Eject').value);
+    s.sort_config.eject_extra_steps=parseInt(document.getElementById('cfgExtra').value);
+    api('/api/settings',{method:'POST',body:s}).then(()=>{
+      const msg=document.getElementById('cfgSaveMsg');
+      msg.style.display='inline';
+      setTimeout(()=>msg.style.display='none',2000);
+    });
+  });
+}
+loadSortConfig();
+
 // === DATA ===
 const TYPES={
   types:["Artifact","Battle","Conspiracy","Creature","Dungeon","Emblem","Enchantment","Hero","Instant","Kindred","Land","Phenomenon","Plane","Planeswalker","Scheme","Sorcery","Vanguard"],
@@ -369,7 +475,7 @@ function renderPC(){
   <div class="rsec ${isA(p,'price')?'active':''}"><div class="rsec-title"><span class="act-dot"></span>Price</div>
   <div class="row"><select class="ssel" onchange="rules[activePile].price.currency=this.value;markDirty()"><option value="usd"${p.price.currency==='usd'?' selected':''}>USD</option><option value="eur"${p.price.currency==='eur'?' selected':''}>EUR</option></select><select class="ssel" onchange="rules[activePile].price.operator=this.value;markDirty()">${['<','>','<=','>='].map(o=>`<option${p.price.operator===o?' selected':''}>${o}</option>`).join('')}</select><input class="sinp" type="number" step="0.01" style="width:70px" value="${p.price.value}" onchange="rules[activePile].price.value=this.value?parseFloat(this.value):'';markDirty();renderPC()"></div></div>
   <div class="rsec ${isA(p,'colors')?'active':''}"><div class="rsec-title"><span class="act-dot"></span>Colors</div>
-  <div class="color-cb">${[['W','White','☀'],['U','Blue','💧'],['B','Black','💀'],['R','Red','🔥'],['G','Green','🌲']].map(([c,n,i])=>`<div class="${p.colors.selected.includes(c)?'checked':''}" onclick="toggleColor('${c}')"><span class="mana ${c}">${i}</span>${n}</div>`).join('')}</div>
+  <div class="color-cb">${[['W','White','☀'],['U','Blue','💧'],['B','Black','💀'],['R','Red','🔥'],['G','Green','🌲'],['C','Colorless','◇']].map(([c,n,i])=>`<div class="${p.colors.selected.includes(c)?'checked':''}" onclick="toggleColor('${c}')"><span class="mana ${c}">${i}</span>${n}</div>`).join('')}</div>
   <div class="row" style="margin-top:4px"><select class="ssel" onchange="rules[activePile].colors.mode=this.value;markDirty()"><option value="exactly"${p.colors.mode==='exactly'?' selected':''}>Exactly these colors</option><option value="including"${p.colors.mode==='including'?' selected':''}>Including these colors</option><option value="at_most"${p.colors.mode==='at_most'?' selected':''}>At most these colors</option></select></div>
   <div style="font-size:8px;color:var(--txd);margin-top:2px;font-style:italic">"Including" = all selected + maybe others. "At most" = some/all selected + colorless.</div></div>
   <div class="rsec ${isA(p,'types')?'active':''}"><div class="rsec-title"><span class="act-dot"></span>Type Line</div>
